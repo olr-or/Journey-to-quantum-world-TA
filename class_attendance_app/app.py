@@ -221,15 +221,6 @@ RESPONSE_MIN_CHARS = 20
 DATE_SHEET_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 CLASS_SCHEDULE = {
-    '''
-    1: {
-        "day_name": "Tuesday",
-        "open": time(16, 0, 0),
-        "present_until": time(16, 5, 0),
-        "late_until": time(16, 20, 0),
-        "close": time(18, 0, 0),
-    },
-    '''
     1: {
     "day_name": "Tuesday",
     "open": time(18, 50, 0),

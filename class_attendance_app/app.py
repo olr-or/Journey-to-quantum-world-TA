@@ -790,6 +790,7 @@ def student_page():
 
     photo = st.camera_input(
         "Take a photo of the ongoing lecture",
+        resolution="1080p",
         key=f"camera_{student['Student ID']}_{context['date_sheet']}",
     )
 

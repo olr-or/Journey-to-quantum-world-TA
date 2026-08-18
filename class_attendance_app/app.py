@@ -221,6 +221,7 @@ ATTENDANCE_HEADERS = [
 RESPONSE_MIN_CHARS = 20
 DATE_SHEET_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
+'''
 CLASS_SCHEDULE = {
     1: {
         "day_name": "Tuesday",
@@ -237,7 +238,24 @@ CLASS_SCHEDULE = {
         "close": time(16, 0, 0),
     },
 }
+'''
 
+CLASS_SCHEDULE = {
+    1: {
+        "day_name": "Tuesday",
+        "open": time(18, 0, 0),
+        "present_until": time(18, 30, 0),
+        "late_until": time(18, 40, 0),
+        "close": time(19, 0, 0),
+    },
+    3: {
+        "day_name": "Thursday",
+        "open": time(15, 0, 0),
+        "present_until": time(15, 5, 0),
+        "late_until": time(15, 20, 0),
+        "close": time(16, 0, 0),
+    },
+}
 
 def now_kst() -> datetime:
     return datetime.now(KST)

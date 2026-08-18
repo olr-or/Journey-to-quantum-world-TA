@@ -211,6 +211,7 @@ ATTENDANCE_HEADERS = [
     "Student ID",
     "Name",
     "Department",
+    "Session",
     "Submitted At",
     "Status",
     "Class Response",
@@ -221,20 +222,35 @@ RESPONSE_MIN_CHARS = 20
 DATE_SHEET_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 CLASS_SCHEDULE = {
-    1: {
-        "day_name": "Tuesday",
-        "open": time(16, 0, 0),
-        "present_until": time(16, 5, 0),
-        "late_until": time(16, 20, 0),
-        "close": time(18, 0, 0),
-    },
-    3: {
-        "day_name": "Thursday",
-        "open": time(15, 0, 0),
-        "present_until": time(15, 5, 0),
-        "late_until": time(15, 20, 0),
-        "close": time(16, 0, 0),
-    },
+    1: [
+        {
+            "session": "16:00 Check",
+            "day_name": "Tuesday",
+            "open": time(16, 0, 0),
+            "present_until": time(16, 5, 0),
+            "late_until": time(16, 20, 0),
+            "close": time(17, 0, 0),
+        },
+        {
+            "session": "17:00 Check",
+            "day_name": "Tuesday",
+            "open": time(17, 0, 0),
+            "present_until": time(17, 5, 0),
+            "late_until": time(17, 20, 0),
+            "close": time(18, 0, 0),
+        },
+    ],
+
+    3: [
+        {
+            "session": "15:00 Check",
+            "day_name": "Thursday",
+            "open": time(15, 0, 0),
+            "present_until": time(15, 5, 0),
+            "late_until": time(15, 20, 0),
+            "close": time(16, 0, 0),
+        },
+    ],
 }
 
 
@@ -250,9 +266,9 @@ def class_context(now: datetime | None = None) -> dict:
     else:
         now = now.astimezone(KST)
 
-    schedule = CLASS_SCHEDULE.get(now.weekday())
+    schedules = CLASS_SCHEDULE.get(now.weekday())
 
-    if schedule is None:
+    if schedules is None:
         return {
             "is_class_day": False,
             "can_submit": False,
@@ -264,41 +280,59 @@ def class_context(now: datetime | None = None) -> dict:
 
     current_t = now.time().replace(tzinfo=None)
 
-    if current_t < schedule["open"]:
-        can_submit = False
-        message = f"Attendance submission opens at {schedule['open'].strftime('%H:%M')}."
-    elif current_t > schedule["close"]:
-        can_submit = False
-        message = f"Today's attendance submission closed at {schedule['close'].strftime('%H:%M')}."
+    for schedule in schedules:
+        if schedule["open"] <= current_t <= schedule["close"]:
+            return {
+                "is_class_day": True,
+                "can_submit": True,
+                "message": "Attendance submission is currently open.",
+                "date_sheet": now.date().isoformat(),
+                "now": now,
+                "schedule": schedule,
+            }
+
+    first_open = schedules[0]["open"]
+    last_close = schedules[-1]["close"]
+
+    if current_t < first_open:
+        message = (
+            f"Attendance submission opens at "
+            f"{first_open.strftime('%H:%M')}."
+        )
     else:
-        can_submit = True
-        message = "Attendance submission is currently open."
+        message = (
+            f"Today's attendance submission closed at "
+            f"{last_close.strftime('%H:%M')}."
+        )
 
     return {
         "is_class_day": True,
-        "can_submit": can_submit,
+        "can_submit": False,
         "message": message,
         "date_sheet": now.date().isoformat(),
         "now": now,
-        "schedule": schedule,
+        "schedule": None,
     }
 
 
 def determine_status(submitted_at: datetime) -> str:
     submitted_at = submitted_at.astimezone(KST)
-    schedule = CLASS_SCHEDULE.get(submitted_at.weekday())
 
-    if schedule is None:
+    schedules = CLASS_SCHEDULE.get(submitted_at.weekday())
+    if schedules is None:
         return "Absent"
 
     t = submitted_at.time().replace(tzinfo=None)
 
-    if schedule["open"] <= t <= schedule["present_until"]:
-        return "Present"
-    if schedule["present_until"] < t <= schedule["late_until"]:
-        return "Late"
-    return "Absent"
+    for schedule in schedules:
+        if schedule["open"] <= t <= schedule["close"]:
+            if t <= schedule["present_until"]:
+                return "Present"
+            if t <= schedule["late_until"]:
+                return "Late"
+            return "Absent"
 
+    return "Absent"
 
 def secret_ready() -> bool:
     try:
@@ -448,25 +482,38 @@ def read_attendance_sheet(date_sheet: str) -> pd.DataFrame:
 
     return pd.DataFrame(normalized, columns=ATTENDANCE_HEADERS)
 
-
-def student_has_submitted(student_id: str, date_sheet: str) -> bool:
+def student_has_submitted(
+    student_id: str,
+    date_sheet: str,
+    session: str,
+) -> bool:
     df = read_attendance_sheet(date_sheet)
+
     if df.empty:
         return False
 
-    return str(student_id) in set(df["Student ID"].astype(str).str.strip())
+    matched = df[
+        (df["Student ID"].astype(str).str.strip() == str(student_id).strip())
+        & (df["Session"].astype(str).str.strip() == session)
+    ]
 
+    return not matched.empty
 
 def append_attendance_record(
     student: pd.Series,
     submitted_at: datetime,
     status: str,
+    session: str,
     class_response: str,
     photo_url: str,
 ) -> None:
     date_sheet = submitted_at.astimezone(KST).date().isoformat()
 
-    if student_has_submitted(str(student["Student ID"]), date_sheet):
+    if student_has_submitted(
+        str(student["Student ID"]),
+        date_sheet,
+        session,
+    ):
         raise ValueError("Attendance has already been submitted for today's class.")
 
     ws = ensure_attendance_sheet(date_sheet)
@@ -476,6 +523,7 @@ def append_attendance_record(
             str(student["Student ID"]),
             str(student["Name"]),
             str(student["Department"]),
+            session,
             submitted_at.astimezone(KST).strftime("%Y-%m-%d %H:%M:%S"),
             status,
             class_response.strip(),
@@ -639,7 +687,7 @@ def student_page():
           <div class="student-kicker">CLASS ATTENDANCE</div>
           <div class="student-title">Attendance Check</div>
           <p class="student-subtitle">
-            Take a photo of the ongoing lecture and briefly describe one topic or concept discussed in class.<br>
+            Take a photo of the ongoing lecture and briefly describe what you expect to learn from today's class.<br>
             Attendance is determined automatically based on the actual submission time.
           </p>
         </div>
@@ -652,7 +700,7 @@ def student_page():
         st.markdown(
             f"""
             <div class="schedule-card">
-              🎀 <strong>{s['day_name']} class</strong><br>
+              🎀 <strong>{s['day_name']} — {s['session']}</strong><br>
               Class time: {s['open'].strftime('%H:%M')}–{s['close'].strftime('%H:%M')}<br>
               Present: through {s['present_until'].strftime('%H:%M')} &nbsp;·&nbsp;
               Late: through {s['late_until'].strftime('%H:%M')} &nbsp;·&nbsp;
@@ -745,7 +793,11 @@ def student_page():
                 )
                 return
 
-            if student_has_submitted(student_id, context["date_sheet"]):
+            if student_has_submitted(
+                student_id,
+                context["date_sheet"],
+                context["schedule"]["session"],
+            ):
                 st.warning(
                     "Attendance has already been submitted for today's class."
                 )
@@ -766,6 +818,7 @@ def student_page():
     if student_has_submitted(
         str(student["Student ID"]),
         context["date_sheet"],
+        context["schedule"]["session"],
     ):
         st.warning(
             "Attendance has already been submitted for today's class."
@@ -781,8 +834,8 @@ def student_page():
         <div class="instruction-card">
           <strong>1. Take a class photo</strong><br>
           Use the camera below to photograph the ongoing lecture. File upload is not available.<br><br>
-          <strong>2. Write a short class response</strong><br>
-          Briefly describe one topic, idea, or concept discussed during today's lecture.
+          <strong>2. Write a short response</strong><br>
+          Briefly describe what you expect to learn or understand better during this class.
         </div>
         """,
         unsafe_allow_html=True,
@@ -795,8 +848,8 @@ def student_page():
     )
 
     class_response = st.text_area(
-        "Class Response",
-        placeholder="Briefly describe one topic or concept discussed in today's class.",
+        "What do you expect to learn?",
+        placeholder="Briefly describe what you expect to learn or understand better during this class.",
         height=140,
         max_chars=1000,
     )
@@ -834,6 +887,7 @@ def student_page():
         if student_has_submitted(
             str(student["Student ID"]),
             fresh_context["date_sheet"],
+            fresh_context["schedule"]["session"],
         ):
             st.warning(
                 "Attendance has already been submitted for today's class."
@@ -855,6 +909,7 @@ def student_page():
                     student=student,
                     submitted_at=submitted_at,
                     status=status,
+                    session=fresh_context["schedule"]["session"],
                     class_response=class_response,
                     photo_url=photo_url,
                 )

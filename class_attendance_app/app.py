@@ -43,7 +43,7 @@ st.markdown(
 
       .block-container {
         max-width: 760px;
-        padding-top: 2.2rem;
+        padding-top: 4.2rem;
         padding-bottom: 4rem;
       }
 
@@ -192,7 +192,7 @@ st.markdown(
       div[data-testid="stAlert"] { border-radius: 16px; }
 
       @media (max-width: 640px) {
-        .block-container { padding-top: 1.4rem; }
+        .block-container { padding-top: 3.4rem; }
         .student-title { font-size: 2.15rem; }
         div[data-testid="stForm"] { padding: 1rem 1rem .55rem; }
       }

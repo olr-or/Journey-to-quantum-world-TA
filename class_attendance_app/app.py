@@ -43,7 +43,7 @@ st.markdown(
 
       .block-container {
         max-width: 760px;
-        padding-top: 2.2rem;
+        padding-top: 4.2rem;
         padding-bottom: 4rem;
       }
 
@@ -192,7 +192,7 @@ st.markdown(
       div[data-testid="stAlert"] { border-radius: 16px; }
 
       @media (max-width: 640px) {
-        .block-container { padding-top: 1.4rem; }
+        .block-container { padding-top: 3.4rem; }
         .student-title { font-size: 2.15rem; }
         div[data-testid="stForm"] { padding: 1rem 1rem .55rem; }
       }
@@ -221,12 +221,21 @@ RESPONSE_MIN_CHARS = 20
 DATE_SHEET_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 CLASS_SCHEDULE = {
+    '''
     1: {
         "day_name": "Tuesday",
         "open": time(16, 0, 0),
         "present_until": time(16, 5, 0),
         "late_until": time(16, 20, 0),
         "close": time(18, 0, 0),
+    },
+    '''
+    1: {
+    "day_name": "Tuesday",
+    "open": time(18, 50, 0),
+    "present_until": time(19, 5, 0),
+    "late_until": time(19, 20, 0),
+    "close": time(20, 0, 0),
     },
     3: {
         "day_name": "Thursday",

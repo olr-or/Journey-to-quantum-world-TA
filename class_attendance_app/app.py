@@ -224,15 +224,22 @@ DATE_SHEET_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 CLASS_SCHEDULE = {
     1: [
         {
-            "session": "19:55 Check",
+            "session": "16:00 Check",
             "day_name": "Tuesday",
-            "open": time(19, 55, 0),
-            "present_until": time(20, 5, 0),
-            "late_until": time(20, 15, 0),
-            "close": time(20, 30, 0),
+            "open": time(16, 0, 0),
+            "present_until": time(16, 5, 0),
+            "late_until": time(16, 20, 0),
+            "close": time(17, 0, 0),
+        },
+        {
+            "session": "17:00 Check",
+            "day_name": "Tuesday",
+            "open": time(17, 0, 0),
+            "present_until": time(17, 5, 0),
+            "late_until": time(17, 20, 0),
+            "close": time(18, 0, 0),
         },
     ],
-
     3: [
         {
             "session": "15:00 Check",

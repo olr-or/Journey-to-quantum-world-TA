@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import hmac
@@ -10,7 +9,8 @@ from zoneinfo import ZoneInfo
 import gspread
 import pandas as pd
 import streamlit as st
-from google.oauth2.service_account import Credentials
+from google.oauth2.service_account import Credentials as ServiceAccountCredentials
+from google.oauth2.credentials import Credentials as UserCredentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 
@@ -43,7 +43,7 @@ st.markdown(
 
       .block-container {
         max-width: 760px;
-        padding-top: 4.2rem;
+        padding-top: 2.2rem;
         padding-bottom: 4rem;
       }
 
@@ -192,7 +192,7 @@ st.markdown(
       div[data-testid="stAlert"] { border-radius: 16px; }
 
       @media (max-width: 640px) {
-        .block-container { padding-top: 3.4rem; }
+        .block-container { padding-top: 1.4rem; }
         .student-title { font-size: 2.15rem; }
         div[data-testid="stForm"] { padding: 1rem 1rem .55rem; }
       }
@@ -204,7 +204,6 @@ st.markdown(
 KST = ZoneInfo("Asia/Seoul")
 
 SPREADSHEET_ID = "1QqzM0Me8-YgAER0HLjNwhQ9x2CdIK5Huibdjb0oaDnw"
-DRIVE_FOLDER_ID = "1gdIFkp94XNW0C0YoHgHYj30AW-92fwV6"
 
 ROSTER_HEADERS = ["Student ID", "Name", "Department"]
 
@@ -221,7 +220,6 @@ ATTENDANCE_HEADERS = [
 RESPONSE_MIN_CHARS = 20
 DATE_SHEET_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
-'''
 CLASS_SCHEDULE = {
     1: {
         "day_name": "Tuesday",
@@ -238,24 +236,7 @@ CLASS_SCHEDULE = {
         "close": time(16, 0, 0),
     },
 }
-'''
 
-CLASS_SCHEDULE = {
-    1: {
-        "day_name": "Tuesday",
-        "open": time(18, 0, 0),
-        "present_until": time(18, 30, 0),
-        "late_until": time(18, 40, 0),
-        "close": time(19, 0, 0),
-    },
-    3: {
-        "day_name": "Thursday",
-        "open": time(15, 0, 0),
-        "present_until": time(15, 5, 0),
-        "late_until": time(15, 20, 0),
-        "close": time(16, 0, 0),
-    },
-}
 
 def now_kst() -> datetime:
     return datetime.now(KST)
@@ -323,6 +304,8 @@ def secret_ready() -> bool:
     try:
         _ = st.secrets["ADMIN_PASSWORD"]
         _ = st.secrets["gcp_service_account"]
+        _ = st.secrets["drive_oauth"]
+        _ = st.secrets["DRIVE_FOLDER_ID"]
         return True
     except Exception:
         return False
@@ -338,7 +321,7 @@ def open_spreadsheet():
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive",
     ]
-    credentials = Credentials.from_service_account_info(
+    credentials = ServiceAccountCredentials.from_service_account_info(
         service_account_info(),
         scopes=scopes,
     )
@@ -348,11 +331,23 @@ def open_spreadsheet():
 
 @st.cache_resource(show_spinner=False)
 def drive_service():
-    credentials = Credentials.from_service_account_info(
-        service_account_info(),
+    oauth = dict(st.secrets["drive_oauth"])
+
+    credentials = UserCredentials(
+        token=None,
+        refresh_token=oauth["refresh_token"],
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=oauth["client_id"],
+        client_secret=oauth["client_secret"],
         scopes=["https://www.googleapis.com/auth/drive"],
     )
-    return build("drive", "v3", credentials=credentials, cache_discovery=False)
+
+    return build(
+        "drive",
+        "v3",
+        credentials=credentials,
+        cache_discovery=False,
+    )
 
 
 def worksheet_exists(title: str) -> bool:
@@ -507,11 +502,12 @@ def escape_drive_query(value: str) -> str:
 
 def get_or_create_date_folder(date_sheet: str) -> str:
     service = drive_service()
+    parent_folder_id = str(st.secrets["DRIVE_FOLDER_ID"]).strip()
     escaped_name = escape_drive_query(date_sheet)
 
     query = (
         f"name = '{escaped_name}' "
-        f"and '{DRIVE_FOLDER_ID}' in parents "
+        f"and '{parent_folder_id}' in parents "
         "and mimeType = 'application/vnd.google-apps.folder' "
         "and trashed = false"
     )
@@ -531,7 +527,7 @@ def get_or_create_date_folder(date_sheet: str) -> str:
         body={
             "name": date_sheet,
             "mimeType": "application/vnd.google-apps.folder",
-            "parents": [DRIVE_FOLDER_ID],
+            "parents": [parent_folder_id],
         },
         fields="id",
     ).execute()
@@ -1039,8 +1035,8 @@ if not secret_ready():
     st.title("Class Attendance")
     st.error("Deployment setup has not been completed yet.")
     st.markdown(
-        "Configure `ADMIN_PASSWORD` and `[gcp_service_account]` "
-        "in Streamlit Cloud **Secrets**."
+        "Configure `ADMIN_PASSWORD`, `DRIVE_FOLDER_ID`, `[gcp_service_account]`, and "
+        "`[drive_oauth]` in Streamlit Cloud **Secrets**."
     )
     st.stop()
 

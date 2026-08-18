@@ -694,33 +694,47 @@ def student_page():
         """,
         unsafe_allow_html=True,
     )
-
-    if context["is_class_day"]:
+    
+    if context["is_class_day"] and context["schedule"] is not None:
         s = context["schedule"]
+
         st.markdown(
             f"""
             <div class="schedule-card">
-              🎀 <strong>{s['day_name']} — {s['session']}</strong><br>
-              Class time: {s['open'].strftime('%H:%M')}–{s['close'].strftime('%H:%M')}<br>
-              Present: through {s['present_until'].strftime('%H:%M')} &nbsp;·&nbsp;
-              Late: through {s['late_until'].strftime('%H:%M')} &nbsp;·&nbsp;
-              Absent: after {s['late_until'].strftime('%H:%M')}
+            🎀 <strong>{s['day_name']} — {s['session']}</strong><br>
+            Class time: {s['open'].strftime('%H:%M')}–{s['close'].strftime('%H:%M')}<br>
+            Present: through {s['present_until'].strftime('%H:%M')} &nbsp;·&nbsp;
+            Late: through {s['late_until'].strftime('%H:%M')} &nbsp;·&nbsp;
+            Absent: after {s['late_until'].strftime('%H:%M')}
             </div>
             """,
             unsafe_allow_html=True,
         )
+
+    elif context["is_class_day"]:
+        st.markdown(
+            """
+            <div class="schedule-card">
+            🎀 <strong>Today's class schedule</strong><br>
+            Tuesday: 16:00 Check & 17:00 Check<br>
+            Thursday: 15:00 Check
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    
     else:
         st.markdown(
             """
             <div class="schedule-card">
-              🎀 <strong>Regular class schedule</strong><br>
-              Tuesday: 16:00–18:00<br>
-              Thursday: 15:00–16:00
+            🎀 <strong>Regular class schedule</strong><br>
+            Tuesday: 16:00–18:00<br>
+            Thursday: 15:00–16:00
             </div>
             """,
             unsafe_allow_html=True,
         )
-
+    
     roster = read_roster()
 
     if roster.empty:

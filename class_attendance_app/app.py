@@ -17,7 +17,7 @@ from googleapiclient.http import MediaIoBaseUpload
 
 st.set_page_config(
     page_title="Class Attendance",
-    page_icon="🎀",
+    page_icon="🌼",
     layout="centered",
 )
 
@@ -25,19 +25,19 @@ st.markdown(
     """
     <style>
       :root {
-        --pink-50: #fff7fa;
-        --pink-100: #ffe9f1;
-        --pink-200: #ffd4e3;
-        --pink-400: #f58aae;
-        --pink-500: #ee6f9c;
-        --pink-600: #df5c8c;
-        --ink: #3d3340;
-        --muted: #837984;
-        --line: #f1d9e2;
+        --yellow-50: #fffdf4;
+        --yellow-100: #fff6cf;
+        --yellow-200: #ffe89a;
+        --yellow-400: #f2c94c;
+        --yellow-500: #e7b832;
+        --yellow-600: #c99716;
+        --ink: #3f392d;
+        --muted: #847c69;
+        --line: #efe3b9;
       }
 
       .stApp {
-        background: linear-gradient(180deg, #fff9fb 0%, #ffffff 40%);
+        background: linear-gradient(180deg, #fffdf7 0%, #ffffff 40%);
         color: var(--ink);
       }
 
@@ -50,7 +50,7 @@ st.markdown(
       .student-hero { margin: 0 0 1.25rem 0; }
 
       .student-kicker {
-        color: var(--pink-600);
+        color: var(--yellow-600);
         font-weight: 700;
         font-size: .78rem;
         letter-spacing: .12em;
@@ -63,7 +63,7 @@ st.markdown(
         line-height: 1.05;
         font-weight: 800;
         letter-spacing: -.04em;
-        color: #332d35;
+        color: #3d372b;
         margin: 0 0 .55rem 0;
       }
 
@@ -75,37 +75,37 @@ st.markdown(
       }
 
       .schedule-card {
-        background: linear-gradient(135deg, #fff0f5, #fff8fb);
-        border: 1px solid var(--pink-200);
+        background: linear-gradient(135deg, #fff8dc, #fffdf3);
+        border: 1px solid var(--yellow-200);
         border-radius: 18px;
         padding: 1rem 1.15rem;
         margin: 1rem 0 1.35rem 0;
-        color: #6e4d5d;
-        box-shadow: 0 8px 24px rgba(205, 92, 137, .06);
+        color: #6f6240;
+        box-shadow: 0 8px 24px rgba(201, 151, 22, .08);
         line-height: 1.7;
       }
 
-      .schedule-card strong { color: #b94772; }
+      .schedule-card strong { color: #a87700; }
 
       div[data-testid="stForm"] {
         background: rgba(255,255,255,.92);
         border: 1px solid var(--line);
         border-radius: 22px;
         padding: 1.35rem 1.35rem .75rem;
-        box-shadow: 0 12px 36px rgba(120, 66, 88, .06);
+        box-shadow: 0 12px 36px rgba(128, 102, 26, .06);
       }
 
       div[data-baseweb="input"] > div,
       div[data-baseweb="textarea"] > div {
         border-radius: 14px !important;
         border-color: var(--line) !important;
-        background: #fffafb !important;
+        background: #fffdf7 !important;
       }
 
       div[data-baseweb="input"] > div:focus-within,
       div[data-baseweb="textarea"] > div:focus-within {
-        border-color: var(--pink-400) !important;
-        box-shadow: 0 0 0 1px var(--pink-400) !important;
+        border-color: var(--yellow-400) !important;
+        box-shadow: 0 0 0 1px var(--yellow-400) !important;
       }
 
       button[kind="primary"],
@@ -113,14 +113,14 @@ st.markdown(
       div[data-testid="stFormSubmitButton"] button,
       button[data-testid="stBaseButton-primary"],
       button[data-testid="stBaseButton-primaryFormSubmit"] {
-        background: linear-gradient(135deg, #ee6f9c, #df5c8c) !important;
-        background-color: #ee6f9c !important;
+        background: linear-gradient(135deg, #e7b832, #c99716) !important;
+        background-color: #e7b832 !important;
         border: none !important;
         color: white !important;
         border-radius: 14px !important;
         min-height: 3rem !important;
         font-weight: 700 !important;
-        box-shadow: 0 8px 20px rgba(223, 92, 140, .22) !important;
+        box-shadow: 0 8px 20px rgba(201, 151, 22, .22) !important;
       }
 
       button[kind="primary"]:hover,
@@ -128,39 +128,39 @@ st.markdown(
       div[data-testid="stFormSubmitButton"] button:hover,
       button[data-testid="stBaseButton-primary"]:hover,
       button[data-testid="stBaseButton-primaryFormSubmit"]:hover {
-        background: linear-gradient(135deg, #f58aae, #ee6f9c) !important;
-        background-color: #ee6f9c !important;
+        background: linear-gradient(135deg, #f2c94c, #e7b832) !important;
+        background-color: #e7b832 !important;
         border: none !important;
         color: white !important;
         transform: translateY(-1px);
-        box-shadow: 0 10px 24px rgba(223, 92, 140, .28) !important;
+        box-shadow: 0 10px 24px rgba(201, 151, 22, .28) !important;
       }
 
       div[data-testid="stMetric"] {
-        background: #fffafb;
+        background: #fffdf7;
         border: 1px solid var(--line);
         border-radius: 16px;
         padding: 12px;
       }
 
       .instruction-card {
-        background: #fff6f9;
-        border-left: 4px solid var(--pink-400);
+        background: #fff9e8;
+        border-left: 4px solid var(--yellow-400);
         border-radius: 14px;
         padding: .9rem 1rem;
         margin: 1rem 0 1.25rem;
-        color: #6f5964;
+        color: #6d6247;
         line-height: 1.6;
       }
 
       .success-card {
         text-align: center;
-        background: linear-gradient(145deg, #fff4f8, #ffffff);
-        border: 1px solid var(--pink-200);
+        background: linear-gradient(145deg, #fff8dc, #ffffff);
+        border: 1px solid var(--yellow-200);
         border-radius: 24px;
         padding: 2rem 1.4rem;
         margin: 1.25rem 0;
-        box-shadow: 0 16px 36px rgba(205, 92, 137, .09);
+        box-shadow: 0 16px 36px rgba(201, 151, 22, .10);
       }
 
       .success-icon {
@@ -171,8 +171,8 @@ st.markdown(
         display: flex;
         align-items: center;
         justify-content: center;
-        background: #f8cddd;
-        color: #a63f67;
+        background: #ffe7a3;
+        color: #9c7200;
         font-size: 1.55rem;
         font-weight: 900;
       }
@@ -180,7 +180,7 @@ st.markdown(
       .success-title {
         font-size: 1.35rem;
         font-weight: 800;
-        color: #493943;
+        color: #4b4330;
         margin-bottom: .35rem;
       }
 
@@ -694,46 +694,30 @@ def student_page():
         unsafe_allow_html=True,
     )
     
-    if context["is_class_day"] and context["schedule"] is not None:
+    st.markdown(
+        """
+        <div class="schedule-card">
+          🌼 <strong>Regular class schedule</strong><br><br>
+
+          <strong>Tuesday: 16:00–18:00</strong>
+          <span style="font-size:0.93rem;">(attendance checks at 16:00 and 17:00)</span><br>
+          &nbsp;&nbsp;16:00 check — Present: through 16:05 &nbsp;·&nbsp; Late: through 16:20 &nbsp;·&nbsp; Absent: after 16:20<br>
+          &nbsp;&nbsp;17:00 check — Present: through 17:05 &nbsp;·&nbsp; Late: through 17:20 &nbsp;·&nbsp; Absent: after 17:20<br><br>
+
+          <strong>Thursday: 15:00–16:00</strong><br>
+          &nbsp;&nbsp;15:00 check — Present: through 15:05 &nbsp;·&nbsp; Late: through 15:20 &nbsp;·&nbsp; Absent: after 15:20
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if context["can_submit"] and context["schedule"] is not None:
         s = context["schedule"]
-
-        st.markdown(
-            f"""
-            <div class="schedule-card">
-            🎀 <strong>{s['day_name']} — {s['session']}</strong><br>
-            Class time: {s['open'].strftime('%H:%M')}–{s['close'].strftime('%H:%M')}<br>
-            Present: through {s['present_until'].strftime('%H:%M')} &nbsp;·&nbsp;
-            Late: through {s['late_until'].strftime('%H:%M')} &nbsp;·&nbsp;
-            Absent: after {s['late_until'].strftime('%H:%M')}
-            </div>
-            """,
-            unsafe_allow_html=True,
+        st.caption(
+            f"Current attendance window: {s['day_name']} — {s['session']} "
+            f"({s['open'].strftime('%H:%M')}–{s['close'].strftime('%H:%M')})"
         )
 
-    elif context["is_class_day"]:
-        st.markdown(
-            """
-            <div class="schedule-card">
-            🎀 <strong>Today's class schedule</strong><br>
-            Tuesday: 16:00 Check & 17:00 Check<br>
-            Thursday: 15:00 Check
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    
-    else:
-        st.markdown(
-            """
-            <div class="schedule-card">
-            🎀 <strong>Regular class schedule</strong><br>
-            Tuesday: 16:00–18:00<br>
-            Thursday: 15:00–16:00
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    
     roster = read_roster()
 
     if roster.empty:
@@ -937,7 +921,7 @@ def student_page():
 
         st.session_state.attendance_student = None
         st.session_state.attendance_submitted = True
-        st.toast(f"Attendance submitted: {status} 🎀")
+        st.toast(f"Attendance submitted: {status} 🌼")
         st.rerun()
 
     if st.button("Change Student Information"):

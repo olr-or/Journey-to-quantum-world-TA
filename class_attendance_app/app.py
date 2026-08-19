@@ -240,16 +240,6 @@ CLASS_SCHEDULE = {
             "close": time(18, 0, 0),
         },
     ],
-    2: [
-        {
-            "session": "14:00 Test Check",
-            "day_name": "Wednesday",
-            "open": time(13, 50, 0),
-            "present_until": time(14, 5, 0),
-            "late_until": time(14, 15, 0),
-            "close": time(14, 30, 0),
-        },
-    ],
     3: [
         {
             "session": "15:00 Check",

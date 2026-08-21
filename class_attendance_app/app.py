@@ -517,20 +517,63 @@ def append_attendance_record(
 
     ws = ensure_attendance_sheet(date_sheet)
 
-    ws.append_row(
+    status_korean = {
+        "Present": "출석",
+        "Late": "지각",
+        "Absent": "결석",
+    }.get(status, status)
+
+    result = ws.append_row(
         [
             str(student["Student ID"]),
             str(student["Name"]),
             str(student["Department"]),
             session,
             submitted_at.astimezone(KST).strftime("%Y-%m-%d %H:%M:%S"),
-            status,
+            status_korean,
             class_response.strip(),
             photo_url,
         ],
         value_input_option="RAW",
     )
 
+    updated_range = result.get("updates", {}).get("updatedRange", "")
+    match = re.search(r"(\d+)$", updated_range)
+
+    if not match:
+        return
+
+    row_number = int(match.group(1))
+    status_cell = f"F{row_number}"
+
+    status_colors = {
+        "출석": {
+            "red": 0.094,
+            "green": 0.502,
+            "blue": 0.220,
+        },
+        "지각": {
+            "red": 0.890,
+            "green": 0.455,
+            "blue": 0.000,
+        },
+        "결석": {
+            "red": 0.851,
+            "green": 0.188,
+            "blue": 0.145,
+        },
+    }
+
+    if status_korean in status_colors:
+        ws.format(
+            status_cell,
+            {
+                "textFormat": {
+                    "foregroundColor": status_colors[status_korean],
+                    "bold": True,
+                }
+            },
+        )
 
 def list_attendance_sheets() -> list[str]:
     return sorted(
@@ -1004,15 +1047,15 @@ def admin_page():
     ].copy()
 
     present_count = (
-        int((attendance_df["Status"] == "Present").sum())
+        int(attendance_df["Status"].isin(["출석", "Present"]).sum())
         if not attendance_df.empty else 0
     )
     late_count = (
-        int((attendance_df["Status"] == "Late").sum())
+        int(attendance_df["Status"].isin(["지각", "Late"]).sum())
         if not attendance_df.empty else 0
     )
     absent_count = (
-        int((attendance_df["Status"] == "Absent").sum())
+        int(attendance_df["Status"].isin(["결석", "Absent"]).sum())
         if not attendance_df.empty else 0
     )
 

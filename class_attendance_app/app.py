@@ -5,7 +5,6 @@ import io
 import re
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
-
 import gspread
 import pandas as pd
 import streamlit as st
@@ -17,7 +16,7 @@ from googleapiclient.http import MediaIoBaseUpload
 
 st.set_page_config(
     page_title="Class Attendance",
-    page_icon="🌼",
+    page_icon="🐣",
     layout="centered",
 )
 
@@ -729,7 +728,7 @@ def student_page():
           <div class="student-kicker">CLASS ATTENDANCE</div>
           <div class="student-title">Attendance Check</div>
           <p class="student-subtitle">
-            Take a photo of the ongoing lecture and briefly describe what you expect to learn from today's class.<br>
+            Take a photo of the ongoing lecture and briefly respond to the class question below.<br>
             Attendance is determined automatically based on the actual submission time.
           </p>
         </div>
@@ -740,7 +739,7 @@ def student_page():
     st.markdown(
         """
         <div class="schedule-card">
-          🌼 <strong>Regular class schedule</strong><br><br>
+         🐣 <strong>Regular class schedule</strong><br><br>
 
           <strong>Tuesday: 16:00–18:00</strong>
           <span style="font-size:0.93rem;">(attendance checks at 16:00 and 17:00)</span><br>
@@ -869,29 +868,57 @@ def student_page():
     c1.metric("Student", str(student["Name"]))
     c2.metric("Student ID", str(student["Student ID"]))
 
+    if context["schedule"]["session"] == "17:00 Check":
+        response_title = "What do you remember from today's class?"
+        response_instruction = (
+            "Write about something that stood out to you or that you remember "
+            "from the past hour of today's class."
+        )
+        response_placeholder = (
+            "Describe something that stood out to you or that you remember "
+            "from the past hour of today's class."
+        )
+    else:
+        response_title = "What do you expect to learn?"
+        response_instruction = (
+            "Briefly describe what you expect to learn or understand better "
+            "during this class."
+        )
+        response_placeholder = (
+            "Briefly describe what you expect to learn or understand better "
+            "during this class."
+        )
+
     st.markdown(
-        """
+        f"""
         <div class="instruction-card">
-          <strong>1. Take a class photo</strong><br>
-          Use the camera below to photograph the ongoing lecture. File upload is not available.<br><br>
-          <strong>2. Write a short response</strong><br>
-          Briefly describe what you expect to learn or understand better during this class.
+        <strong>1. Take a class photo</strong><br>
+        Use the camera below to photograph the ongoing lecture. File upload is not available.<br><br>
+        <strong>2. Write a short response</strong><br>
+        {response_instruction}
         </div>
         """,
         unsafe_allow_html=True,
     )
 
+    session_key = (
+        context["schedule"]["session"]
+        .replace(" ", "_")
+        .replace(":", "")
+    )
+
     photo = st.camera_input(
         "Take a photo of the ongoing lecture",
         resolution="1080p",
-        key=f"camera_{student['Student ID']}_{context['date_sheet']}",
+        key=f"camera_{student['Student ID']}_{context['date_sheet']}_{session_key}",
     )
 
     class_response = st.text_area(
-        "What do you expect to learn?",
-        placeholder="Briefly describe what you expect to learn or understand better during this class.",
+        response_title,
+        placeholder=response_placeholder,
         height=140,
         max_chars=1000,
+        key=f"response_{student['Student ID']}_{context['date_sheet']}_{session_key}",
     )
 
     st.caption(
@@ -964,7 +991,7 @@ def student_page():
 
         st.session_state.attendance_student = None
         st.session_state.attendance_submitted = True
-        st.toast(f"Attendance submitted: {status} 🌼")
+        st.toast(f"Attendance submitted: {status} 💫")
         st.rerun()
 
     if st.button("Change Student Information"):

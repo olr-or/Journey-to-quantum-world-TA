@@ -268,9 +268,9 @@ CLASS_SCHEDULE = {
 REFLECTION_SCHEDULE = {
     1: {
         "day_name": "Tuesday",
-        "session": "15:30 Reflection Test",
-        "open": time(15, 25, 0),
-        "close": time(15, 50, 0),
+        "session": "17:40 Reflection",
+        "open": time(17, 40, 0),
+        "close": time(18, 0, 0),
     },
     3: {
         "day_name": "Thursday",
@@ -279,7 +279,6 @@ REFLECTION_SCHEDULE = {
         "close": time(16, 0, 0),
     },
 }
-
 
 def now_kst() -> datetime:
     return datetime.now(KST)

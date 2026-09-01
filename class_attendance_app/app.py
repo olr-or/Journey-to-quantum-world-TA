@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 import gspread
 import pandas as pd
 import streamlit as st
+from PIL import Image, ImageOps
 from google.oauth2.service_account import Credentials as ServiceAccountCredentials
 from google.oauth2.credentials import Credentials as UserCredentials
 from googleapiclient.discovery import build
@@ -975,6 +976,61 @@ def safe_filename_part(value: str) -> str:
     return value or "student"
 
 
+def compress_camera_image(
+    camera_file,
+    *,
+    target_bytes: int = 900_000,
+    max_dimension: int = 1920,
+) -> bytes:
+    """
+    Keep the camera capture at 1080p in the browser, but recompress it before
+    uploading to Google Drive. The goal is roughly <= 0.9 MB while preserving
+    enough detail for attendance verification.
+    """
+    original = camera_file.getvalue()
+
+    try:
+        with Image.open(io.BytesIO(original)) as img:
+            img = ImageOps.exif_transpose(img)
+
+            if img.mode not in ("RGB", "L"):
+                img = img.convert("RGB")
+            elif img.mode == "L":
+                img = img.convert("RGB")
+
+            # Keep 1080p-scale detail, but avoid unexpectedly huge camera frames.
+            if max(img.size) > max_dimension:
+                scale = max_dimension / max(img.size)
+                new_size = (
+                    max(1, int(img.width * scale)),
+                    max(1, int(img.height * scale)),
+                )
+                img = img.resize(new_size, Image.Resampling.LANCZOS)
+
+            # Start high and step down only if needed.
+            for quality in (82, 76, 70, 64, 58):
+                output = io.BytesIO()
+                img.save(
+                    output,
+                    format="JPEG",
+                    quality=quality,
+                    progressive=True,
+                    subsampling="4:2:0",
+                )
+                compressed = output.getvalue()
+
+                if len(compressed) <= target_bytes:
+                    return compressed
+
+            # If still over target, use the smallest result from the loop.
+            return compressed
+
+    except Exception:
+        # A photo upload should not fail solely because recompression failed.
+        # Fall back to the original camera bytes.
+        return original
+
+
 def upload_attendance_photo(
     camera_file,
     student_id: str,
@@ -990,9 +1046,11 @@ def upload_attendance_photo(
         f"{submitted_at.astimezone(KST).strftime('%H%M%S')}.jpg"
     )
 
+    compressed_photo = compress_camera_image(camera_file)
+
     media = MediaIoBaseUpload(
-        io.BytesIO(camera_file.getvalue()),
-        mimetype=camera_file.type or "image/jpeg",
+        io.BytesIO(compressed_photo),
+        mimetype="image/jpeg",
         resumable=False,
     )
 

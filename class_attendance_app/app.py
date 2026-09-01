@@ -5,6 +5,7 @@ import io
 import re
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
+
 import gspread
 import pandas as pd
 import streamlit as st
@@ -217,7 +218,20 @@ ATTENDANCE_HEADERS = [
     "Photo URL",
 ]
 
+REFLECTION_SHEET = "reflections"
+REFLECTION_HEADERS = [
+    "Student ID",
+    "Name",
+    "Department",
+    "Class Date",
+    "Day",
+    "Session",
+    "Submitted At",
+    "Reflection",
+]
+
 RESPONSE_MIN_CHARS = 20
+REFLECTION_MIN_CHARS = 20
 DATE_SHEET_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 CLASS_SCHEDULE = {
@@ -250,6 +264,22 @@ CLASS_SCHEDULE = {
         },
     ],
 }
+
+REFLECTION_SCHEDULE = {
+    1: {
+        "day_name": "Tuesday",
+        "session": "17:40 Reflection",
+        "open": time(17, 40, 0),
+        "close": time(18, 0, 0),
+    },
+    3: {
+        "day_name": "Thursday",
+        "session": "15:50 Reflection",
+        "open": time(15, 50, 0),
+        "close": time(16, 0, 0),
+    },
+}
+
 
 
 def now_kst() -> datetime:
@@ -311,6 +341,61 @@ def class_context(now: datetime | None = None) -> dict:
         "now": now,
         "schedule": None,
     }
+
+
+def reflection_context(now: datetime | None = None) -> dict:
+    if now is None:
+        now = now_kst()
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=KST)
+    else:
+        now = now.astimezone(KST)
+
+    schedule = REFLECTION_SCHEDULE.get(now.weekday())
+    date_sheet = now.date().isoformat()
+
+    if schedule is None:
+        return {
+            "is_reflection_day": False,
+            "can_submit": False,
+            "message": "No class reflection is scheduled today.",
+            "date_sheet": date_sheet,
+            "now": now,
+            "schedule": None,
+        }
+
+    current_t = now.time().replace(tzinfo=None)
+
+    if schedule["open"] <= current_t <= schedule["close"]:
+        return {
+            "is_reflection_day": True,
+            "can_submit": True,
+            "message": "Class Reflection is currently open.",
+            "date_sheet": date_sheet,
+            "now": now,
+            "schedule": schedule,
+        }
+
+    if current_t < schedule["open"]:
+        message = (
+            f"Class Reflection opens at "
+            f"{schedule['open'].strftime('%H:%M')}."
+        )
+    else:
+        message = (
+            f"Today's Class Reflection closed at "
+            f"{schedule['close'].strftime('%H:%M')}."
+        )
+
+    return {
+        "is_reflection_day": True,
+        "can_submit": False,
+        "message": message,
+        "date_sheet": date_sheet,
+        "now": now,
+        "schedule": schedule,
+    }
+
 
 
 def determine_status(submitted_at: datetime) -> str:
@@ -479,6 +564,101 @@ def read_attendance_sheet(date_sheet: str) -> pd.DataFrame:
         return pd.DataFrame(columns=ATTENDANCE_HEADERS)
 
     return pd.DataFrame(normalized, columns=ATTENDANCE_HEADERS)
+
+def ensure_reflection_sheet():
+    ws = get_or_create_worksheet(
+        REFLECTION_SHEET,
+        rows=1000,
+        cols=len(REFLECTION_HEADERS) + 2,
+    )
+
+    first_row = ws.row_values(1)
+
+    if not first_row:
+        ws.append_row(REFLECTION_HEADERS, value_input_option="RAW")
+        return ws
+
+    if first_row[: len(REFLECTION_HEADERS)] != REFLECTION_HEADERS:
+        raise RuntimeError(
+            f"The header of the '{REFLECTION_SHEET}' sheet does not match the expected format. "
+            f"Please set the first row to {REFLECTION_HEADERS}."
+        )
+
+    return ws
+
+
+def read_reflections() -> pd.DataFrame:
+    if not worksheet_exists(REFLECTION_SHEET):
+        return pd.DataFrame(columns=REFLECTION_HEADERS)
+
+    ws = open_spreadsheet().worksheet(REFLECTION_SHEET)
+    values = ws.get_all_values()
+
+    if not values:
+        return pd.DataFrame(columns=REFLECTION_HEADERS)
+
+    header = values[0]
+
+    if header[: len(REFLECTION_HEADERS)] != REFLECTION_HEADERS:
+        raise RuntimeError(
+            f"The header of the '{REFLECTION_SHEET}' sheet does not match the expected format. "
+            f"Please set the first row to {REFLECTION_HEADERS}."
+        )
+
+    normalized = []
+    for row in values[1:]:
+        row = list(row) + [""] * (len(REFLECTION_HEADERS) - len(row))
+        normalized.append(row[: len(REFLECTION_HEADERS)])
+
+    if not normalized:
+        return pd.DataFrame(columns=REFLECTION_HEADERS)
+
+    return pd.DataFrame(normalized, columns=REFLECTION_HEADERS)
+
+
+def reflection_has_submitted(student_id: str, class_date: str) -> bool:
+    df = read_reflections()
+
+    if df.empty:
+        return False
+
+    matched = df[
+        (df["Student ID"].astype(str).str.strip() == str(student_id).strip())
+        & (df["Class Date"].astype(str).str.strip() == str(class_date).strip())
+    ]
+
+    return not matched.empty
+
+
+def append_reflection(
+    student: pd.Series,
+    submitted_at: datetime,
+    session: str,
+    reflection: str,
+) -> None:
+    submitted_at = submitted_at.astimezone(KST)
+    class_date = submitted_at.date().isoformat()
+
+    if reflection_has_submitted(str(student["Student ID"]), class_date):
+        raise ValueError("You have already submitted today's class reflection.")
+
+    ws = ensure_reflection_sheet()
+
+    ws.append_row(
+        [
+            str(student["Student ID"]),
+            str(student["Name"]),
+            str(student["Department"]),
+            class_date,
+            submitted_at.strftime("%A"),
+            session,
+            submitted_at.strftime("%Y-%m-%d %H:%M:%S"),
+            reflection.strip(),
+        ],
+        value_input_option="RAW",
+    )
+
+
 
 def student_has_submitted(
     student_id: str,
@@ -739,7 +919,7 @@ def student_page():
     st.markdown(
         """
         <div class="schedule-card">
-         🐣 <strong>Regular class schedule</strong><br><br>
+          🐣 <strong>Regular class schedule</strong><br><br>
 
           <strong>Tuesday: 16:00–18:00</strong>
           <span style="font-size:0.93rem;">(attendance checks at 16:00 and 17:00)</span><br>
@@ -991,12 +1171,217 @@ def student_page():
 
         st.session_state.attendance_student = None
         st.session_state.attendance_submitted = True
-        st.toast(f"Attendance submitted: {status} 💫")
+        st.toast(f"Attendance submitted: {status} 🐣")
         st.rerun()
 
     if st.button("Change Student Information"):
         st.session_state.attendance_student = None
         st.rerun()
+
+
+def reflection_page():
+    context = reflection_context()
+
+    st.markdown(
+        """
+        <div class="student-hero">
+          <div class="student-kicker">CLASS REFLECTION</div>
+          <div class="student-title">Class Reflection</div>
+          <p class="student-subtitle">
+            Share a short reflection on today's class.<br>
+            No photo is required for this submission.
+          </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        """
+        <div class="schedule-card">
+          🐣 <strong>Reflection submission schedule</strong><br><br>
+          <strong>Tuesday:</strong> 17:40–18:00<br>
+          <strong>Thursday:</strong> 15:50–16:00
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if not context["can_submit"]:
+        st.info(context["message"])
+        return
+
+    roster = read_roster()
+
+    if roster.empty:
+        st.error("The student roster has not been registered yet.")
+        return
+
+    if "reflection_student" not in st.session_state:
+        st.session_state.reflection_student = None
+
+    if "reflection_submitted" not in st.session_state:
+        st.session_state.reflection_submitted = False
+
+    if st.session_state.reflection_submitted:
+        st.markdown(
+            """
+            <div class="success-card">
+              <div class="success-icon">✓</div>
+              <div class="success-title">Reflection Submitted</div>
+              <div class="success-copy">
+                Your class reflection has been recorded successfully.
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        if st.button("Return to Reflection Start"):
+            st.session_state.reflection_submitted = False
+            st.session_state.reflection_student = None
+            st.rerun()
+        return
+
+    if st.session_state.reflection_student is None:
+        with st.form("reflection_login"):
+            student_id = st.text_input(
+                "Student ID",
+                placeholder="e.g. 2025163002",
+                key="reflection_student_id",
+            ).strip()
+
+            student_name = st.text_input(
+                "Name",
+                placeholder="Enter your registered name",
+                key="reflection_student_name",
+            ).strip()
+
+            start = st.form_submit_button(
+                "Start Class Reflection",
+                type="primary",
+                use_container_width=True,
+            )
+
+        if start:
+            matched = roster[
+                (roster["Student ID"].astype(str) == student_id)
+                & (roster["Name"].astype(str) == student_name)
+            ]
+
+            if matched.empty:
+                st.error(
+                    "The Student ID and Name do not match the registered roster."
+                )
+                return
+
+            if reflection_has_submitted(student_id, context["date_sheet"]):
+                st.warning("You have already submitted today's class reflection.")
+                return
+
+            st.session_state.reflection_student = matched.iloc[0].to_dict()
+            st.rerun()
+
+        return
+
+    student = pd.Series(st.session_state.reflection_student)
+
+    context = reflection_context()
+    if not context["can_submit"]:
+        st.warning(context["message"])
+        return
+
+    if reflection_has_submitted(
+        str(student["Student ID"]),
+        context["date_sheet"],
+    ):
+        st.warning("You have already submitted today's class reflection.")
+        return
+
+    c1, c2 = st.columns(2)
+    c1.metric("Student", str(student["Name"]))
+    c2.metric("Student ID", str(student["Student ID"]))
+
+    st.markdown(
+        """
+        <div class="instruction-card">
+          <strong>Class Reflection</strong><br>
+          Please share your thoughts or reflections on today's class.
+          You can write about what stood out to you, what you found interesting,
+          or how you felt about today's lesson.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    reflection_text = st.text_area(
+        "What are your thoughts on today's class?",
+        placeholder=(
+            "Share anything that stood out to you, what you found interesting, "
+            "or how you felt about today's class."
+        ),
+        height=170,
+        max_chars=1500,
+        key=f"reflection_{student['Student ID']}_{context['date_sheet']}",
+    )
+
+    st.caption(
+        f"Please write at least {REFLECTION_MIN_CHARS} characters. No photo is required."
+    )
+
+    if st.button(
+        "Submit Class Reflection",
+        type="primary",
+        use_container_width=True,
+    ):
+        submitted_at = now_kst()
+        fresh_context = reflection_context(submitted_at)
+
+        if not fresh_context["can_submit"]:
+            st.error(
+                "The Class Reflection submission window has closed. "
+                "Your response was not recorded."
+            )
+            return
+
+        if len(reflection_text.strip()) < REFLECTION_MIN_CHARS:
+            st.error(
+                f"Please write at least {REFLECTION_MIN_CHARS} characters."
+            )
+            return
+
+        if reflection_has_submitted(
+            str(student["Student ID"]),
+            fresh_context["date_sheet"],
+        ):
+            st.warning("You have already submitted today's class reflection.")
+            return
+
+        try:
+            with st.spinner("Saving your class reflection..."):
+                append_reflection(
+                    student=student,
+                    submitted_at=submitted_at,
+                    session=fresh_context["schedule"]["session"],
+                    reflection=reflection_text,
+                )
+        except Exception as exc:
+            st.error(
+                "An error occurred while saving your class reflection. "
+                "Please contact the course TAs."
+            )
+            st.exception(exc)
+            return
+
+        st.session_state.reflection_student = None
+        st.session_state.reflection_submitted = True
+        st.toast("Class reflection submitted 🐣")
+        st.rerun()
+
+    if st.button("Change Reflection Student Information"):
+        st.session_state.reflection_student = None
+        st.rerun()
+
 
 
 def admin_login() -> bool:
@@ -1150,6 +1535,20 @@ def admin_page():
             use_container_width=True,
         )
 
+    st.divider()
+    st.subheader("Class Reflections")
+
+    reflection_df = read_reflections()
+
+    if reflection_df.empty:
+        st.info("No class reflections have been submitted yet.")
+    else:
+        st.dataframe(
+            reflection_df,
+            hide_index=True,
+            use_container_width=True,
+        )
+
     if st.button("Reload Latest Data"):
         st.rerun()
 
@@ -1166,12 +1565,14 @@ if not secret_ready():
 
 page = st.sidebar.radio(
     "Menu",
-    ["Attendance Check", "Admin"],
+    ["Attendance Check", "Class Reflection", "Admin"],
 )
 
 try:
     if page == "Attendance Check":
         student_page()
+    elif page == "Class Reflection":
+        reflection_page()
     else:
         admin_page()
 

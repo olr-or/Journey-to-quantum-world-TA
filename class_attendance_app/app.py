@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import hmac
 import io
+import queue
+import random
 import re
+import threading
+import time as time_module
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
 
@@ -12,6 +16,7 @@ import streamlit as st
 from google.oauth2.service_account import Credentials as ServiceAccountCredentials
 from google.oauth2.credentials import Credentials as UserCredentials
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseUpload
 
 
@@ -284,6 +289,50 @@ def now_kst() -> datetime:
     return datetime.now(KST)
 
 
+RETRYABLE_HTTP_STATUS = {429, 500, 502, 503, 504}
+
+
+def _http_status_from_exception(exc: Exception):
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    if status is None:
+        resp = getattr(exc, "resp", None)
+        status = getattr(resp, "status", None)
+    try:
+        return int(status) if status is not None else None
+    except Exception:
+        return None
+
+
+def api_call_with_backoff(func, *, attempts: int = 7):
+    """Retry transient Google API failures with exponential backoff."""
+    for attempt in range(attempts):
+        try:
+            return func()
+        except (gspread.exceptions.APIError, HttpError) as exc:
+            status = _http_status_from_exception(exc)
+            if status not in RETRYABLE_HTTP_STATUS or attempt == attempts - 1:
+                raise
+            delay = min((2 ** attempt) + random.uniform(0.0, 0.8), 20.0)
+            time_module.sleep(delay)
+
+
+@st.cache_resource(show_spinner=False)
+def submission_state():
+    return {
+        "lock": threading.RLock(),
+        "attendance": set(),
+        "reflections": set(),
+    }
+
+
+def clear_read_caches():
+    read_roster.clear()
+    read_attendance_sheet.clear()
+    read_reflections.clear()
+    list_attendance_sheets.clear()
+
+
 def class_context(now: datetime | None = None) -> dict:
     if now is None:
         now = now_kst()
@@ -465,14 +514,16 @@ def drive_service():
     )
 
 
+@st.cache_data(ttl=60, show_spinner=False)
 def worksheet_exists(title: str) -> bool:
     try:
-        open_spreadsheet().worksheet(title)
+        api_call_with_backoff(lambda: open_spreadsheet().worksheet(title))
         return True
     except gspread.WorksheetNotFound:
         return False
 
 
+@st.cache_resource(show_spinner=False)
 def get_or_create_worksheet(title: str, rows: int, cols: int):
     spreadsheet = open_spreadsheet()
     try:
@@ -481,9 +532,10 @@ def get_or_create_worksheet(title: str, rows: int, cols: int):
         return spreadsheet.add_worksheet(title=title, rows=rows, cols=cols)
 
 
+@st.cache_data(ttl=600, show_spinner=False)
 def read_roster() -> pd.DataFrame:
     ws = get_or_create_worksheet("students", rows=200, cols=6)
-    values = ws.get_all_values()
+    values = api_call_with_backoff(ws.get_all_values)
 
     if not values:
         return pd.DataFrame(columns=ROSTER_HEADERS)
@@ -513,6 +565,7 @@ def read_roster() -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 
+@st.cache_resource(show_spinner=False)
 def ensure_attendance_sheet(date_sheet: str):
     ws = get_or_create_worksheet(
         date_sheet,
@@ -520,10 +573,48 @@ def ensure_attendance_sheet(date_sheet: str):
         cols=len(ATTENDANCE_HEADERS) + 2,
     )
 
-    first_row = ws.row_values(1)
+    first_row = api_call_with_backoff(lambda: ws.row_values(1))
 
     if not first_row:
-        ws.append_row(ATTENDANCE_HEADERS, value_input_option="RAW")
+        api_call_with_backoff(
+            lambda: ws.append_row(ATTENDANCE_HEADERS, value_input_option="RAW")
+        )
+
+        sheet_id = ws.id
+        requests = []
+        for value, color in [
+            ("출석", {"red": 0.094, "green": 0.502, "blue": 0.220}),
+            ("지각", {"red": 0.890, "green": 0.455, "blue": 0.000}),
+            ("결석", {"red": 0.851, "green": 0.188, "blue": 0.145}),
+        ]:
+            requests.append({
+                "addConditionalFormatRule": {
+                    "rule": {
+                        "ranges": [{
+                            "sheetId": sheet_id,
+                            "startRowIndex": 1,
+                            "startColumnIndex": 5,
+                            "endColumnIndex": 6,
+                        }],
+                        "booleanRule": {
+                            "condition": {
+                                "type": "TEXT_EQ",
+                                "values": [{"userEnteredValue": value}],
+                            },
+                            "format": {
+                                "textFormat": {
+                                    "foregroundColor": color,
+                                    "bold": True,
+                                }
+                            },
+                        },
+                    },
+                    "index": 0,
+                }
+            })
+        api_call_with_backoff(
+            lambda: open_spreadsheet().batch_update({"requests": requests})
+        )
         return ws
 
     if first_row[: len(ATTENDANCE_HEADERS)] != ATTENDANCE_HEADERS:
@@ -535,18 +626,18 @@ def ensure_attendance_sheet(date_sheet: str):
     return ws
 
 
+@st.cache_data(ttl=20, show_spinner=False)
 def read_attendance_sheet(date_sheet: str) -> pd.DataFrame:
-    if not worksheet_exists(date_sheet):
+    try:
+        ws = api_call_with_backoff(lambda: open_spreadsheet().worksheet(date_sheet))
+    except gspread.WorksheetNotFound:
         return pd.DataFrame(columns=ATTENDANCE_HEADERS)
 
-    ws = open_spreadsheet().worksheet(date_sheet)
-    values = ws.get_all_values()
-
+    values = api_call_with_backoff(ws.get_all_values)
     if not values:
         return pd.DataFrame(columns=ATTENDANCE_HEADERS)
 
     header = values[0]
-
     if header[: len(ATTENDANCE_HEADERS)] != ATTENDANCE_HEADERS:
         raise RuntimeError(
             f"The header of the '{date_sheet}' sheet does not match the expected format. "
@@ -560,9 +651,10 @@ def read_attendance_sheet(date_sheet: str) -> pd.DataFrame:
 
     if not normalized:
         return pd.DataFrame(columns=ATTENDANCE_HEADERS)
-
     return pd.DataFrame(normalized, columns=ATTENDANCE_HEADERS)
 
+
+@st.cache_resource(show_spinner=False)
 def ensure_reflection_sheet():
     ws = get_or_create_worksheet(
         REFLECTION_SHEET,
@@ -570,10 +662,12 @@ def ensure_reflection_sheet():
         cols=len(REFLECTION_HEADERS) + 2,
     )
 
-    first_row = ws.row_values(1)
+    first_row = api_call_with_backoff(lambda: ws.row_values(1))
 
     if not first_row:
-        ws.append_row(REFLECTION_HEADERS, value_input_option="RAW")
+        api_call_with_backoff(
+            lambda: ws.append_row(REFLECTION_HEADERS, value_input_option="RAW")
+        )
         return ws
 
     if first_row[: len(REFLECTION_HEADERS)] != REFLECTION_HEADERS:
@@ -585,18 +679,18 @@ def ensure_reflection_sheet():
     return ws
 
 
+@st.cache_data(ttl=20, show_spinner=False)
 def read_reflections() -> pd.DataFrame:
-    if not worksheet_exists(REFLECTION_SHEET):
+    try:
+        ws = api_call_with_backoff(lambda: open_spreadsheet().worksheet(REFLECTION_SHEET))
+    except gspread.WorksheetNotFound:
         return pd.DataFrame(columns=REFLECTION_HEADERS)
 
-    ws = open_spreadsheet().worksheet(REFLECTION_SHEET)
-    values = ws.get_all_values()
-
+    values = api_call_with_backoff(ws.get_all_values)
     if not values:
         return pd.DataFrame(columns=REFLECTION_HEADERS)
 
     header = values[0]
-
     if header[: len(REFLECTION_HEADERS)] != REFLECTION_HEADERS:
         raise RuntimeError(
             f"The header of the '{REFLECTION_SHEET}' sheet does not match the expected format. "
@@ -610,22 +704,117 @@ def read_reflections() -> pd.DataFrame:
 
     if not normalized:
         return pd.DataFrame(columns=REFLECTION_HEADERS)
-
     return pd.DataFrame(normalized, columns=REFLECTION_HEADERS)
 
 
 def reflection_has_submitted(student_id: str, class_date: str) -> bool:
-    df = read_reflections()
+    key = (str(student_id).strip(), str(class_date).strip())
+    state = submission_state()
 
+    with state["lock"]:
+        if key in state["reflections"]:
+            return True
+
+    df = read_reflections()
     if df.empty:
         return False
 
     matched = df[
-        (df["Student ID"].astype(str).str.strip() == str(student_id).strip())
-        & (df["Class Date"].astype(str).str.strip() == str(class_date).strip())
+        (df["Student ID"].astype(str).str.strip() == key[0])
+        & (df["Class Date"].astype(str).str.strip() == key[1])
     ]
+    exists = not matched.empty
+    if exists:
+        with state["lock"]:
+            state["reflections"].add(key)
+    return exists
 
-    return not matched.empty
+
+class SheetWriteBatcher:
+    """Batch near-simultaneous submissions into a small number of Sheets writes."""
+
+    def __init__(self):
+        self._queue = queue.Queue()
+        self._thread = threading.Thread(
+            target=self._worker,
+            name="google-sheet-batch-writer",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def submit(self, kind: str, sheet_name: str, row: list, state_key: tuple):
+        item = {
+            "kind": kind,
+            "sheet_name": sheet_name,
+            "row": row,
+            "state_key": state_key,
+            "done": threading.Event(),
+            "error": None,
+        }
+        state = submission_state()
+        bucket = "attendance" if kind == "attendance" else "reflections"
+
+        with state["lock"]:
+            if state_key in state[bucket]:
+                raise ValueError(
+                    "Attendance has already been submitted for today's class."
+                    if kind == "attendance"
+                    else "You have already submitted today's class reflection."
+                )
+            state[bucket].add(state_key)
+
+        self._queue.put(item)
+
+        if not item["done"].wait(timeout=45):
+            with state["lock"]:
+                state[bucket].discard(state_key)
+            raise TimeoutError("Saving took too long. Please try again in a moment.")
+
+        if item["error"] is not None:
+            raise item["error"]
+
+    def _worker(self):
+        while True:
+            first = self._queue.get()
+            batch = [first]
+            deadline = time_module.monotonic() + 1.0
+
+            while len(batch) < 100:
+                remaining = deadline - time_module.monotonic()
+                if remaining <= 0:
+                    break
+                try:
+                    batch.append(self._queue.get(timeout=remaining))
+                except queue.Empty:
+                    break
+
+            groups = {}
+            for item in batch:
+                groups.setdefault((item["kind"], item["sheet_name"]), []).append(item)
+
+            for (kind, sheet_name), items in groups.items():
+                state = submission_state()
+                bucket = "attendance" if kind == "attendance" else "reflections"
+                try:
+                    ws = ensure_attendance_sheet(sheet_name) if kind == "attendance" else ensure_reflection_sheet()
+                    rows = [item["row"] for item in items]
+                    api_call_with_backoff(
+                        lambda ws=ws, rows=rows: ws.append_rows(rows, value_input_option="RAW")
+                    )
+                except Exception as exc:
+                    with state["lock"]:
+                        for item in items:
+                            state[bucket].discard(item["state_key"])
+                            item["error"] = exc
+                            item["done"].set()
+                else:
+                    for item in items:
+                        item["done"].set()
+
+
+@st.cache_resource(show_spinner=False)
+def sheet_write_batcher():
+    return SheetWriteBatcher()
 
 
 def append_reflection(
@@ -640,22 +829,23 @@ def append_reflection(
     if reflection_has_submitted(str(student["Student ID"]), class_date):
         raise ValueError("You have already submitted today's class reflection.")
 
-    ws = ensure_reflection_sheet()
-
-    ws.append_row(
-        [
-            str(student["Student ID"]),
-            str(student["Name"]),
-            str(student["Department"]),
-            class_date,
-            submitted_at.strftime("%A"),
-            session,
-            submitted_at.strftime("%Y-%m-%d %H:%M:%S"),
-            reflection.strip(),
-        ],
-        value_input_option="RAW",
+    row = [
+        str(student["Student ID"]),
+        str(student["Name"]),
+        str(student["Department"]),
+        class_date,
+        submitted_at.strftime("%A"),
+        session,
+        submitted_at.strftime("%Y-%m-%d %H:%M:%S"),
+        reflection.strip(),
+    ]
+    state_key = (str(student["Student ID"]).strip(), class_date)
+    sheet_write_batcher().submit(
+        kind="reflection",
+        sheet_name=REFLECTION_SHEET,
+        row=row,
+        state_key=state_key,
     )
-
 
 
 def student_has_submitted(
@@ -663,17 +853,27 @@ def student_has_submitted(
     date_sheet: str,
     session: str,
 ) -> bool:
-    df = read_attendance_sheet(date_sheet)
+    key = (str(student_id).strip(), str(date_sheet).strip(), str(session).strip())
+    state = submission_state()
 
+    with state["lock"]:
+        if key in state["attendance"]:
+            return True
+
+    df = read_attendance_sheet(date_sheet)
     if df.empty:
         return False
 
     matched = df[
-        (df["Student ID"].astype(str).str.strip() == str(student_id).strip())
-        & (df["Session"].astype(str).str.strip() == session)
+        (df["Student ID"].astype(str).str.strip() == key[0])
+        & (df["Session"].astype(str).str.strip() == key[2])
     ]
+    exists = not matched.empty
+    if exists:
+        with state["lock"]:
+            state["attendance"].add(key)
+    return exists
 
-    return not matched.empty
 
 def append_attendance_record(
     student: pd.Series,
@@ -685,14 +885,8 @@ def append_attendance_record(
 ) -> None:
     date_sheet = submitted_at.astimezone(KST).date().isoformat()
 
-    if student_has_submitted(
-        str(student["Student ID"]),
-        date_sheet,
-        session,
-    ):
+    if student_has_submitted(str(student["Student ID"]), date_sheet, session):
         raise ValueError("Attendance has already been submitted for today's class.")
-
-    ws = ensure_attendance_sheet(date_sheet)
 
     status_korean = {
         "Present": "출석",
@@ -700,63 +894,31 @@ def append_attendance_record(
         "Absent": "결석",
     }.get(status, status)
 
-    result = ws.append_row(
-        [
-            str(student["Student ID"]),
-            str(student["Name"]),
-            str(student["Department"]),
-            session,
-            submitted_at.astimezone(KST).strftime("%Y-%m-%d %H:%M:%S"),
-            status_korean,
-            class_response.strip(),
-            photo_url,
-        ],
-        value_input_option="RAW",
+    row = [
+        str(student["Student ID"]),
+        str(student["Name"]),
+        str(student["Department"]),
+        session,
+        submitted_at.astimezone(KST).strftime("%Y-%m-%d %H:%M:%S"),
+        status_korean,
+        class_response.strip(),
+        photo_url,
+    ]
+    state_key = (str(student["Student ID"]).strip(), date_sheet, str(session).strip())
+    sheet_write_batcher().submit(
+        kind="attendance",
+        sheet_name=date_sheet,
+        row=row,
+        state_key=state_key,
     )
 
-    updated_range = result.get("updates", {}).get("updatedRange", "")
-    match = re.search(r"(\d+)$", updated_range)
 
-    if not match:
-        return
-
-    row_number = int(match.group(1))
-    status_cell = f"F{row_number}"
-
-    status_colors = {
-        "출석": {
-            "red": 0.094,
-            "green": 0.502,
-            "blue": 0.220,
-        },
-        "지각": {
-            "red": 0.890,
-            "green": 0.455,
-            "blue": 0.000,
-        },
-        "결석": {
-            "red": 0.851,
-            "green": 0.188,
-            "blue": 0.145,
-        },
-    }
-
-    if status_korean in status_colors:
-        ws.format(
-            status_cell,
-            {
-                "textFormat": {
-                    "foregroundColor": status_colors[status_korean],
-                    "bold": True,
-                }
-            },
-        )
-
+@st.cache_data(ttl=60, show_spinner=False)
 def list_attendance_sheets() -> list[str]:
     return sorted(
         [
             ws.title
-            for ws in open_spreadsheet().worksheets()
+            for ws in api_call_with_backoff(open_spreadsheet().worksheets)
             if DATE_SHEET_RE.match(ws.title)
         ],
         reverse=True,
@@ -767,6 +929,7 @@ def escape_drive_query(value: str) -> str:
     return value.replace("\\", "\\\\").replace("'", "\\'")
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
 def get_or_create_date_folder(date_sheet: str) -> str:
     service = drive_service()
     parent_folder_id = str(st.secrets["DRIVE_FOLDER_ID"]).strip()
@@ -779,25 +942,29 @@ def get_or_create_date_folder(date_sheet: str) -> str:
         "and trashed = false"
     )
 
-    result = service.files().list(
-        q=query,
-        spaces="drive",
-        fields="files(id,name)",
-        pageSize=10,
-    ).execute()
+    result = api_call_with_backoff(
+        lambda: service.files().list(
+            q=query,
+            spaces="drive",
+            fields="files(id,name)",
+            pageSize=10,
+        ).execute()
+    )
 
     files = result.get("files", [])
     if files:
         return files[0]["id"]
 
-    created = service.files().create(
-        body={
-            "name": date_sheet,
-            "mimeType": "application/vnd.google-apps.folder",
-            "parents": [parent_folder_id],
-        },
-        fields="id",
-    ).execute()
+    created = api_call_with_backoff(
+        lambda: service.files().create(
+            body={
+                "name": date_sheet,
+                "mimeType": "application/vnd.google-apps.folder",
+                "parents": [parent_folder_id],
+            },
+            fields="id",
+        ).execute()
+    )
 
     return created["id"]
 
@@ -829,14 +996,16 @@ def upload_attendance_photo(
         resumable=False,
     )
 
-    created = drive_service().files().create(
-        body={
-            "name": filename,
-            "parents": [folder_id],
-        },
-        media_body=media,
-        fields="id,webViewLink",
-    ).execute()
+    created = api_call_with_backoff(
+        lambda: drive_service().files().create(
+            body={
+                "name": filename,
+                "parents": [folder_id],
+            },
+            media_body=media,
+            fields="id,webViewLink",
+        ).execute()
+    )
 
     file_id = created["id"]
 
@@ -1548,6 +1717,8 @@ def admin_page():
         )
 
     if st.button("Reload Latest Data"):
+        clear_read_caches()
+        worksheet_exists.clear()
         st.rerun()
 
 

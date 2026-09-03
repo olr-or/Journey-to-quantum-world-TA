@@ -286,8 +286,8 @@ REFLECTION_SCHEDULE = {
     },
     3: {
         "day_name": "Thursday",
-        "session": "15:40 Reflection",
-        "open": time(15, 40, 0),
+        "session": "15:50 Reflection",
+        "open": time(15, 50, 0),
         "close": time(17, 0, 0),
     },
 }
@@ -486,8 +486,9 @@ def service_account_info() -> dict:
     return dict(st.secrets["gcp_service_account"])
 
 
-@st.cache_resource(show_spinner=False)
 def open_spreadsheet():
+    # Do not cache/share a live HTTP client across Streamlit session threads.
+    # Cached *data* and cached worksheet resources still keep API traffic low.
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive",
@@ -500,8 +501,10 @@ def open_spreadsheet():
     return client.open_by_key(SPREADSHEET_ID)
 
 
-@st.cache_resource(show_spinner=False)
 def drive_service():
+    # google-api-python-client/httplib2 transports are not thread-safe.
+    # Build a fresh Drive service for each operation instead of sharing one
+    # cached service across all Streamlit sessions.
     oauth = dict(st.secrets["drive_oauth"])
 
     credentials = UserCredentials(
@@ -523,7 +526,6 @@ def drive_service():
 
 def find_reflection_question_file() -> dict | None:
     """Return the Drive metadata for the current reflection question file."""
-    service = drive_service()
     parent_folder_id = str(st.secrets["DRIVE_FOLDER_ID"]).strip()
     escaped_name = escape_drive_query(REFLECTION_QUESTION_FILENAME)
 
@@ -533,15 +535,16 @@ def find_reflection_question_file() -> dict | None:
         "and trashed = false"
     )
 
-    result = api_call_with_backoff(
-        lambda: service.files().list(
-            q=query,
-            spaces="drive",
-            fields="files(id,name,modifiedTime)",
-            orderBy="modifiedTime desc",
-            pageSize=10,
-        ).execute()
-    )
+    with drive_service() as service:
+        result = api_call_with_backoff(
+            lambda: service.files().list(
+                q=query,
+                spaces="drive",
+                fields="files(id,name,modifiedTime)",
+                orderBy="modifiedTime desc",
+                pageSize=10,
+            ).execute()
+        )
 
     files = result.get("files", [])
     return files[0] if files else None
@@ -554,11 +557,12 @@ def load_reflection_question() -> str:
     if not file_info:
         return DEFAULT_REFLECTION_QUESTION
 
-    content = api_call_with_backoff(
-        lambda: drive_service().files().get_media(
-            fileId=file_info["id"]
-        ).execute()
-    )
+    with drive_service() as service:
+        content = api_call_with_backoff(
+            lambda: service.files().get_media(
+                fileId=file_info["id"]
+            ).execute()
+        )
 
     if isinstance(content, str):
         text = content
@@ -575,37 +579,37 @@ def save_reflection_question(question_text: str) -> dict:
     if not question_text:
         raise ValueError("The uploaded question file is empty.")
 
-    service = drive_service()
     parent_folder_id = str(st.secrets["DRIVE_FOLDER_ID"]).strip()
-    media = MediaIoBaseUpload(
-        io.BytesIO(question_text.encode("utf-8")),
-        mimetype="text/plain; charset=utf-8",
-        resumable=False,
-    )
-
     existing = find_reflection_question_file()
 
-    if existing:
-        saved = api_call_with_backoff(
-            lambda: service.files().update(
-                fileId=existing["id"],
-                body={"name": REFLECTION_QUESTION_FILENAME},
-                media_body=media,
-                fields="id,name,modifiedTime",
-            ).execute()
+    with drive_service() as service:
+        media = MediaIoBaseUpload(
+            io.BytesIO(question_text.encode("utf-8")),
+            mimetype="text/plain; charset=utf-8",
+            resumable=False,
         )
-    else:
-        saved = api_call_with_backoff(
-            lambda: service.files().create(
-                body={
-                    "name": REFLECTION_QUESTION_FILENAME,
-                    "parents": [parent_folder_id],
-                    "mimeType": "text/plain",
-                },
-                media_body=media,
-                fields="id,name,modifiedTime",
-            ).execute()
-        )
+
+        if existing:
+            saved = api_call_with_backoff(
+                lambda: service.files().update(
+                    fileId=existing["id"],
+                    body={"name": REFLECTION_QUESTION_FILENAME},
+                    media_body=media,
+                    fields="id,name,modifiedTime",
+                ).execute()
+            )
+        else:
+            saved = api_call_with_backoff(
+                lambda: service.files().create(
+                    body={
+                        "name": REFLECTION_QUESTION_FILENAME,
+                        "parents": [parent_folder_id],
+                        "mimeType": "text/plain",
+                    },
+                    media_body=media,
+                    fields="id,name,modifiedTime",
+                ).execute()
+            )
 
     load_reflection_question.clear()
     return saved
@@ -620,7 +624,6 @@ def worksheet_exists(title: str) -> bool:
         return False
 
 
-@st.cache_resource(show_spinner=False)
 def get_or_create_worksheet(title: str, rows: int, cols: int):
     spreadsheet = open_spreadsheet()
     try:
@@ -1022,48 +1025,63 @@ def list_attendance_sheets() -> list[str]:
     )
 
 
+# Keep CPU-heavy image decoding/JPEG encoding and Drive media uploads bounded.
+# Each worker owns its own Google Drive client, which avoids sharing a
+# non-thread-safe httplib2 transport between Streamlit session threads.
+PHOTO_UPLOAD_WORKERS = 3
+PHOTO_UPLOAD_TIMEOUT_SECONDS = 120
+
+
+@st.cache_resource(show_spinner=False)
+def date_folder_lock():
+    return threading.Lock()
+
+
 def escape_drive_query(value: str) -> str:
     return value.replace("\\", "\\\\").replace("'", "\\'")
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_or_create_date_folder(date_sheet: str) -> str:
-    service = drive_service()
-    parent_folder_id = str(st.secrets["DRIVE_FOLDER_ID"]).strip()
-    escaped_name = escape_drive_query(date_sheet)
+    # Extra lock avoids duplicate same-date folders if many students are the
+    # first users to submit at exactly the same moment.
+    with date_folder_lock():
+        parent_folder_id = str(st.secrets["DRIVE_FOLDER_ID"]).strip()
+        escaped_name = escape_drive_query(date_sheet)
 
-    query = (
-        f"name = '{escaped_name}' "
-        f"and '{parent_folder_id}' in parents "
-        "and mimeType = 'application/vnd.google-apps.folder' "
-        "and trashed = false"
-    )
+        query = (
+            f"name = '{escaped_name}' "
+            f"and '{parent_folder_id}' in parents "
+            "and mimeType = 'application/vnd.google-apps.folder' "
+            "and trashed = false"
+        )
 
-    result = api_call_with_backoff(
-        lambda: service.files().list(
-            q=query,
-            spaces="drive",
-            fields="files(id,name)",
-            pageSize=10,
-        ).execute()
-    )
+        with drive_service() as service:
+            result = api_call_with_backoff(
+                lambda: service.files().list(
+                    q=query,
+                    spaces="drive",
+                    fields="files(id,name)",
+                    pageSize=10,
+                ).execute()
+            )
 
-    files = result.get("files", [])
-    if files:
-        return files[0]["id"]
+            files = result.get("files", [])
+            if files:
+                return files[0]["id"]
 
-    created = api_call_with_backoff(
-        lambda: service.files().create(
-            body={
-                "name": date_sheet,
-                "mimeType": "application/vnd.google-apps.folder",
-                "parents": [parent_folder_id],
-            },
-            fields="id",
-        ).execute()
-    )
+            created = api_call_with_backoff(
+                lambda: service.files().create(
+                    body={
+                        "name": date_sheet,
+                        "mimeType": "application/vnd.google-apps.folder",
+                        "parents": [parent_folder_id],
+                    },
+                    fields="id",
+                ).execute()
+            )
 
-    return created["id"]
+        return created["id"]
 
 
 def safe_filename_part(value: str) -> str:
@@ -1072,29 +1090,20 @@ def safe_filename_part(value: str) -> str:
     return value or "student"
 
 
-def compress_camera_image(
-    camera_file,
+def compress_camera_image_bytes(
+    original: bytes,
     *,
-    target_bytes: int = 900_000,
-    max_dimension: int = 1920,
+    target_bytes: int = 450_000,
+    max_dimension: int = 1280,
 ) -> bytes:
-    """
-    Keep the camera capture at 1080p in the browser, but recompress it before
-    uploading to Google Drive. The goal is roughly <= 0.9 MB while preserving
-    enough detail for attendance verification.
-    """
-    original = camera_file.getvalue()
-
+    """Recompress a 720p classroom photo with bounded CPU/RAM usage."""
     try:
         with Image.open(io.BytesIO(original)) as img:
             img = ImageOps.exif_transpose(img)
 
-            if img.mode not in ("RGB", "L"):
-                img = img.convert("RGB")
-            elif img.mode == "L":
+            if img.mode != "RGB":
                 img = img.convert("RGB")
 
-            # Keep 1080p-scale detail, but avoid unexpectedly huge camera frames.
             if max(img.size) > max_dimension:
                 scale = max_dimension / max(img.size)
                 new_size = (
@@ -1103,28 +1112,112 @@ def compress_camera_image(
                 )
                 img = img.resize(new_size, Image.Resampling.LANCZOS)
 
-            # Start high and step down only if needed.
-            for quality in (82, 76, 70, 64, 58):
+            # Two passes instead of five: less CPU during a submission burst.
+            for quality in (72, 60):
                 output = io.BytesIO()
                 img.save(
                     output,
                     format="JPEG",
                     quality=quality,
+                    optimize=True,
                     progressive=True,
                     subsampling="4:2:0",
                 )
                 compressed = output.getvalue()
-
                 if len(compressed) <= target_bytes:
                     return compressed
 
-            # If still over target, use the smallest result from the loop.
             return compressed
 
     except Exception:
-        # A photo upload should not fail solely because recompression failed.
-        # Fall back to the original camera bytes.
+        # 720p input is already reasonably small, so fallback is safe.
         return original
+
+
+class DrivePhotoUploadPool:
+    """Serialize a large burst into a small, fixed number of Drive workers."""
+
+    def __init__(self, workers: int = PHOTO_UPLOAD_WORKERS):
+        self._queue = queue.Queue(maxsize=200)
+        self._threads = []
+
+        for index in range(workers):
+            thread = threading.Thread(
+                target=self._worker,
+                name=f"drive-photo-uploader-{index + 1}",
+                daemon=True,
+            )
+            thread.start()
+            self._threads.append(thread)
+
+    def submit(self, *, photo_bytes: bytes, folder_id: str, filename: str) -> str:
+        item = {
+            "photo_bytes": photo_bytes,
+            "folder_id": folder_id,
+            "filename": filename,
+            "done": threading.Event(),
+            "result": None,
+            "error": None,
+        }
+
+        try:
+            self._queue.put(item, timeout=5)
+        except queue.Full as exc:
+            raise TimeoutError(
+                "The photo upload queue is full. Please try submitting again."
+            ) from exc
+
+        if not item["done"].wait(timeout=PHOTO_UPLOAD_TIMEOUT_SECONDS):
+            raise TimeoutError(
+                "Photo upload is taking too long. Please try again in a moment."
+            )
+
+        if item["error"] is not None:
+            raise item["error"]
+
+        return str(item["result"])
+
+    def _worker(self):
+        # This service is created and used only inside this worker thread.
+        service = drive_service()
+
+        while True:
+            item = self._queue.get()
+            try:
+                compressed_photo = compress_camera_image_bytes(item["photo_bytes"])
+                media = MediaIoBaseUpload(
+                    io.BytesIO(compressed_photo),
+                    mimetype="image/jpeg",
+                    resumable=False,
+                )
+
+                created = api_call_with_backoff(
+                    lambda: service.files().create(
+                        body={
+                            "name": item["filename"],
+                            "parents": [item["folder_id"]],
+                        },
+                        media_body=media,
+                        fields="id,webViewLink",
+                    ).execute()
+                )
+
+                file_id = created["id"]
+                item["result"] = created.get(
+                    "webViewLink",
+                    f"https://drive.google.com/file/d/{file_id}/view",
+                )
+
+            except Exception as exc:
+                item["error"] = exc
+            finally:
+                item["done"].set()
+                self._queue.task_done()
+
+
+@st.cache_resource(show_spinner=False)
+def drive_photo_upload_pool():
+    return DrivePhotoUploadPool()
 
 
 def upload_attendance_photo(
@@ -1142,30 +1235,12 @@ def upload_attendance_photo(
         f"{submitted_at.astimezone(KST).strftime('%H%M%S')}.jpg"
     )
 
-    compressed_photo = compress_camera_image(camera_file)
-
-    media = MediaIoBaseUpload(
-        io.BytesIO(compressed_photo),
-        mimetype="image/jpeg",
-        resumable=False,
-    )
-
-    created = api_call_with_backoff(
-        lambda: drive_service().files().create(
-            body={
-                "name": filename,
-                "parents": [folder_id],
-            },
-            media_body=media,
-            fields="id,webViewLink",
-        ).execute()
-    )
-
-    file_id = created["id"]
-
-    return created.get(
-        "webViewLink",
-        f"https://drive.google.com/file/d/{file_id}/view",
+    # The camera widget data lives in Streamlit RAM. Copy the small 720p bytes
+    # into the bounded worker queue, then let only three workers decode/upload.
+    return drive_photo_upload_pool().submit(
+        photo_bytes=camera_file.getvalue(),
+        folder_id=folder_id,
+        filename=filename,
     )
 
 
@@ -1410,7 +1485,7 @@ def student_page():
 
     photo = st.camera_input(
         "Take a photo of the ongoing lecture",
-        resolution="1080p",
+        resolution="720p",
         key=f"camera_{student['Student ID']}_{context['date_sheet']}_{session_key}",
     )
 
@@ -1521,8 +1596,8 @@ def reflection_page():
         """
         <div class="schedule-card">
           🐣 <strong>Reflection submission schedule</strong><br><br>
-          <strong>Tuesday:</strong> 17:40–19:00<br>
-          <strong>Thursday:</strong> 15:40–17:00
+          <strong>Tuesday:</strong> 17:40–18:00<br>
+          <strong>Thursday:</strong> 15:50–16:00
         </div>
         """,
         unsafe_allow_html=True,

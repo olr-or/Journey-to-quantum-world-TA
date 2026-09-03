@@ -287,7 +287,7 @@ REFLECTION_SCHEDULE = {
     3: {
         "day_name": "Thursday",
         "session": "15:50 Reflection",
-        "open": time(15, 50, 0),
+        "open": time(14, 30, 0),
         "close": time(17, 0, 0),
     },
 }

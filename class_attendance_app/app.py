@@ -1522,7 +1522,7 @@ def reflection_page():
         <div class="schedule-card">
           🐣 <strong>Reflection submission schedule</strong><br><br>
           <strong>Tuesday:</strong> 17:40–18:00<br>
-          <strong>Thursday:</strong> 15:50–16:00
+          <strong>Thursday:</strong> 15:40–16:00
         </div>
         """,
         unsafe_allow_html=True,

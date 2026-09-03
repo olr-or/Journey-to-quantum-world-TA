@@ -1148,11 +1148,11 @@ def student_page():
 
           <strong>Tuesday: 16:00–18:00</strong>
           <span style="font-size:0.93rem;">(attendance checks at 16:00 and 17:00)</span><br>
-          &nbsp;&nbsp;16:00 check — Present: through 16:05 &nbsp;·&nbsp; Late: through 16:20 &nbsp;·&nbsp; Absent: after 16:20<br>
+          &nbsp;&nbsp;16:00 check — Present: through 16:10 &nbsp;·&nbsp; Late: through 16:20 &nbsp;·&nbsp; Absent: after 16:20<br>
           &nbsp;&nbsp;17:00 check — Present: through 17:05 &nbsp;·&nbsp; Late: through 17:20 &nbsp;·&nbsp; Absent: after 17:20<br><br>
 
           <strong>Thursday: 15:00–16:00</strong><br>
-          &nbsp;&nbsp;15:00 check — Present: through 15:05 &nbsp;·&nbsp; Late: through 15:20 &nbsp;·&nbsp; Absent: after 15:20
+          &nbsp;&nbsp;15:00 check — Present: through 15:10 &nbsp;·&nbsp; Late: through 15:20 &nbsp;·&nbsp; Absent: after 15:20
         </div>
         """,
         unsafe_allow_html=True,

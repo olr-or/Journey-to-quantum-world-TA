@@ -246,7 +246,7 @@ CLASS_SCHEDULE = {
             "session": "16:00 Check",
             "day_name": "Tuesday",
             "open": time(16, 0, 0),
-            "present_until": time(16, 5, 0),
+            "present_until": time(16, 10, 0),
             "late_until": time(16, 20, 0),
             "close": time(17, 0, 0),
         },
@@ -264,7 +264,7 @@ CLASS_SCHEDULE = {
             "session": "15:00 Check",
             "day_name": "Thursday",
             "open": time(15, 0, 0),
-            "present_until": time(15, 5, 0),
+            "present_until": time(15, 10, 0),
             "late_until": time(15, 20, 0),
             "close": time(16, 0, 0),
         },
@@ -276,13 +276,13 @@ REFLECTION_SCHEDULE = {
         "day_name": "Tuesday",
         "session": "17:40 Reflection",
         "open": time(17, 40, 0),
-        "close": time(18, 0, 0),
+        "close": time(19, 0, 0),
     },
     3: {
         "day_name": "Thursday",
         "session": "15:50 Reflection",
         "open": time(15, 50, 0),
-        "close": time(16, 0, 0),
+        "close": time(17, 0, 0),
     },
 }
 

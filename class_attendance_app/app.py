@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hmac
+import html
 import io
 import queue
 import random
@@ -238,6 +239,11 @@ REFLECTION_HEADERS = [
 
 RESPONSE_MIN_CHARS = 20
 REFLECTION_MIN_CHARS = 20
+
+REFLECTION_QUESTION_FILENAME = "Question.txt"
+DEFAULT_REFLECTION_QUESTION = (
+    "What are your thoughts on today\'s class?"
+)
 DATE_SHEET_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 CLASS_SCHEDULE = {
@@ -513,6 +519,96 @@ def drive_service():
         credentials=credentials,
         cache_discovery=False,
     )
+
+
+def find_reflection_question_file() -> dict | None:
+    """Return the Drive metadata for the current reflection question file."""
+    service = drive_service()
+    parent_folder_id = str(st.secrets["DRIVE_FOLDER_ID"]).strip()
+    escaped_name = escape_drive_query(REFLECTION_QUESTION_FILENAME)
+
+    query = (
+        f"name = '{escaped_name}' "
+        f"and '{parent_folder_id}' in parents "
+        "and trashed = false"
+    )
+
+    result = api_call_with_backoff(
+        lambda: service.files().list(
+            q=query,
+            spaces="drive",
+            fields="files(id,name,modifiedTime)",
+            orderBy="modifiedTime desc",
+            pageSize=10,
+        ).execute()
+    )
+
+    files = result.get("files", [])
+    return files[0] if files else None
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def load_reflection_question() -> str:
+    """Read Question.txt from Drive. Fall back to the original prompt if absent."""
+    file_info = find_reflection_question_file()
+    if not file_info:
+        return DEFAULT_REFLECTION_QUESTION
+
+    content = api_call_with_backoff(
+        lambda: drive_service().files().get_media(
+            fileId=file_info["id"]
+        ).execute()
+    )
+
+    if isinstance(content, str):
+        text = content
+    else:
+        text = bytes(content).decode("utf-8-sig")
+
+    text = text.strip()
+    return text or DEFAULT_REFLECTION_QUESTION
+
+
+def save_reflection_question(question_text: str) -> dict:
+    """Create or replace Question.txt in the configured Drive folder."""
+    question_text = str(question_text).strip()
+    if not question_text:
+        raise ValueError("The uploaded question file is empty.")
+
+    service = drive_service()
+    parent_folder_id = str(st.secrets["DRIVE_FOLDER_ID"]).strip()
+    media = MediaIoBaseUpload(
+        io.BytesIO(question_text.encode("utf-8")),
+        mimetype="text/plain; charset=utf-8",
+        resumable=False,
+    )
+
+    existing = find_reflection_question_file()
+
+    if existing:
+        saved = api_call_with_backoff(
+            lambda: service.files().update(
+                fileId=existing["id"],
+                body={"name": REFLECTION_QUESTION_FILENAME},
+                media_body=media,
+                fields="id,name,modifiedTime",
+            ).execute()
+        )
+    else:
+        saved = api_call_with_backoff(
+            lambda: service.files().create(
+                body={
+                    "name": REFLECTION_QUESTION_FILENAME,
+                    "parents": [parent_folder_id],
+                    "mimeType": "text/plain",
+                },
+                media_body=media,
+                fields="id,name,modifiedTime",
+            ).execute()
+        )
+
+    load_reflection_question.clear()
+    return saved
 
 
 @st.cache_data(ttl=60, show_spinner=False)
@@ -1527,24 +1623,24 @@ def reflection_page():
     c1.metric("Student", str(student["Name"]))
     c2.metric("Student ID", str(student["Student ID"]))
 
+    reflection_question = load_reflection_question()
+    reflection_question_html = "<br>".join(
+        html.escape(line) for line in reflection_question.splitlines()
+    )
+
     st.markdown(
-        """
+        f"""
         <div class="instruction-card">
-          <strong>Class Reflection</strong><br>
-          Please share your thoughts or reflections on today's class.
-          You can write about what stood out to you, what you found interesting,
-          or how you felt about today's lesson.
+          <strong>Class Reflection Question</strong><br><br>
+          {reflection_question_html}
         </div>
         """,
         unsafe_allow_html=True,
     )
 
     reflection_text = st.text_area(
-        "What are your thoughts on today's class?",
-        placeholder=(
-            "Share anything that stood out to you, what you found interesting, "
-            "or how you felt about today's class."
-        ),
+        "Your Reflection",
+        placeholder="Write your response to the question above.",
         height=170,
         max_chars=1500,
         key=f"reflection_{student['Student ID']}_{context['date_sheet']}",
@@ -1761,6 +1857,70 @@ def admin_page():
         )
 
     st.divider()
+    st.subheader("Class Reflection Question")
+    st.caption(
+        "Upload a .txt file here. It is saved to Google Drive as Question.txt, "
+        "and the student Class Reflection page displays it automatically."
+    )
+
+    current_question = load_reflection_question()
+    st.text_area(
+        "Current Question",
+        value=current_question,
+        height=180,
+        disabled=True,
+        key="admin_current_reflection_question",
+    )
+
+    question_upload = st.file_uploader(
+        "Upload new reflection question (.txt)",
+        type=["txt"],
+        accept_multiple_files=False,
+        key="reflection_question_upload",
+    )
+
+    if question_upload is not None:
+        try:
+            preview_question = question_upload.getvalue().decode("utf-8-sig").strip()
+        except UnicodeDecodeError:
+            preview_question = ""
+            st.error("The text file must be UTF-8 encoded.")
+
+        if preview_question:
+            st.text_area(
+                "Uploaded Question Preview",
+                value=preview_question,
+                height=180,
+                disabled=True,
+                key="admin_reflection_question_preview",
+            )
+
+    if st.button(
+        "Update Reflection Question",
+        type="primary",
+        use_container_width=True,
+    ):
+        if question_upload is None:
+            st.error("Please upload a .txt question file first.")
+        else:
+            try:
+                question_text = question_upload.getvalue().decode("utf-8-sig").strip()
+                if not question_text:
+                    raise ValueError("The uploaded question file is empty.")
+
+                with st.spinner("Updating the reflection question..."):
+                    save_reflection_question(question_text)
+
+                st.success("Reflection question updated successfully.")
+                st.rerun()
+
+            except UnicodeDecodeError:
+                st.error("The text file must be UTF-8 encoded.")
+            except Exception as exc:
+                st.error("The reflection question could not be updated.")
+                st.exception(exc)
+
+    st.divider()
     st.subheader("Class Reflections")
 
     reflection_df = read_reflections()
@@ -1777,6 +1937,7 @@ def admin_page():
     if st.button("Reload Latest Data"):
         clear_read_caches()
         worksheet_exists.clear()
+        load_reflection_question.clear()
         st.rerun()
 
 

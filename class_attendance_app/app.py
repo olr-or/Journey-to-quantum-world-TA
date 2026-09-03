@@ -1521,8 +1521,8 @@ def reflection_page():
         """
         <div class="schedule-card">
           🐣 <strong>Reflection submission schedule</strong><br><br>
-          <strong>Tuesday:</strong> 17:40–18:00<br>
-          <strong>Thursday:</strong> 15:40–16:00
+          <strong>Tuesday:</strong> 17:40–19:00<br>
+          <strong>Thursday:</strong> 15:40–17:00
         </div>
         """,
         unsafe_allow_html=True,

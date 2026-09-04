@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hmac
+import hashlib
 import html
 import io
 import queue
@@ -14,7 +15,6 @@ from zoneinfo import ZoneInfo
 import gspread
 import pandas as pd
 import streamlit as st
-from PIL import Image, ImageOps
 from google.oauth2.service_account import Credentials as ServiceAccountCredentials
 from google.oauth2.credentials import Credentials as UserCredentials
 from googleapiclient.discovery import build
@@ -214,7 +214,7 @@ SPREADSHEET_ID = "1QqzM0Me8-YgAER0HLjNwhQ9x2CdIK5Huibdjb0oaDnw"
 
 ROSTER_HEADERS = ["Student ID", "Name", "Department"]
 
-ATTENDANCE_HEADERS = [
+LEGACY_ATTENDANCE_HEADERS = [
     "Student ID",
     "Name",
     "Department",
@@ -224,6 +224,11 @@ ATTENDANCE_HEADERS = [
     "Class Response",
     "Photo URL",
 ]
+
+# Keep the legacy Photo URL column so previously saved attendance rows remain
+# readable. New text-only submissions leave Photo URL blank and store the
+# assigned question in the new Question column.
+ATTENDANCE_HEADERS = LEGACY_ATTENDANCE_HEADERS + ["Question"]
 
 REFLECTION_SHEET = "reflections"
 REFLECTION_HEADERS = [
@@ -239,6 +244,42 @@ REFLECTION_HEADERS = [
 
 RESPONSE_MIN_CHARS = 20
 REFLECTION_MIN_CHARS = 20
+
+START_ATTENDANCE_QUESTIONS = [
+    "지난 수업에서 배운 내용 중, 흥미롭다고 생각한 점을 간략히 작성하세요.",
+    "이번 수업에서 기대하는 내용을 간략히 작성하세요.",
+    "오늘 교수님의 outfit을 자세히 설명하세요.",
+    "오늘 조교가 입은 옷의 색상을 설명하세요.",
+    "오늘 수업에서 사용하는 교수님 슬라이드 자료의 총 페이지 수는?",
+]
+
+MID_ATTENDANCE_QUESTIONS = [
+    "지난 1시간동안 배운 내용중에, 교수님께서 가장 강조하신 내용이 뭔지?",
+    "교수님께서 하신 말씀중에 기억에 남는 것?",
+    "17시에 시작하는 수업 슬라이드 페이지 수는?",
+    "오늘 교수님께서 설명하신 내용중에 가장 흥미롭다고 느낀 내용에 대해 설명하세요.",
+]
+
+
+def attendance_question_for_student(
+    student_id: str,
+    date_sheet: str,
+    session: str,
+) -> str:
+    """Assign one stable pseudo-random question per student/date/session."""
+    questions = (
+        MID_ATTENDANCE_QUESTIONS
+        if session == "17:00 Check"
+        else START_ATTENDANCE_QUESTIONS
+    )
+
+    # Streamlit reruns the script frequently. A deterministic digest keeps the
+    # question unchanged for this student/session even after a refresh or reboot,
+    # while still distributing students across the available question pool.
+    key = f"{student_id}|{date_sheet}|{session}".encode("utf-8")
+    digest = hashlib.sha256(key).digest()
+    index = int.from_bytes(digest[:8], "big") % len(questions)
+    return questions[index]
 
 REFLECTION_QUESTION_FILENAME = "Question.txt"
 DEFAULT_REFLECTION_QUESTION = (
@@ -717,6 +758,14 @@ def ensure_attendance_sheet(date_sheet: str):
         )
         return ws
 
+    if first_row == LEGACY_ATTENDANCE_HEADERS:
+        # Upgrade an existing photo-based attendance sheet without shifting or
+        # rewriting historical rows. The old Photo URL column remains intact.
+        api_call_with_backoff(
+            lambda: ws.update_cell(1, len(ATTENDANCE_HEADERS), "Question")
+        )
+        return ws
+
     if first_row[: len(ATTENDANCE_HEADERS)] != ATTENDANCE_HEADERS:
         raise RuntimeError(
             f"The header of the '{date_sheet}' sheet does not match the expected format. "
@@ -738,7 +787,8 @@ def read_attendance_sheet(date_sheet: str) -> pd.DataFrame:
         return pd.DataFrame(columns=ATTENDANCE_HEADERS)
 
     header = values[0]
-    if header[: len(ATTENDANCE_HEADERS)] != ATTENDANCE_HEADERS:
+    is_legacy = header == LEGACY_ATTENDANCE_HEADERS
+    if not is_legacy and header[: len(ATTENDANCE_HEADERS)] != ATTENDANCE_HEADERS:
         raise RuntimeError(
             f"The header of the '{date_sheet}' sheet does not match the expected format. "
             f"Please set the first row to {ATTENDANCE_HEADERS}."
@@ -980,8 +1030,8 @@ def append_attendance_record(
     submitted_at: datetime,
     status: str,
     session: str,
+    question: str,
     class_response: str,
-    photo_url: str,
 ) -> None:
     date_sheet = submitted_at.astimezone(KST).date().isoformat()
 
@@ -1002,7 +1052,8 @@ def append_attendance_record(
         submitted_at.astimezone(KST).strftime("%Y-%m-%d %H:%M:%S"),
         status_korean,
         class_response.strip(),
-        photo_url,
+        "",  # Photo URL: intentionally blank for the new text-only attendance flow.
+        question.strip(),
     ]
     state_key = (str(student["Student ID"]).strip(), date_sheet, str(session).strip())
     sheet_write_batcher().submit(
@@ -1025,223 +1076,8 @@ def list_attendance_sheets() -> list[str]:
     )
 
 
-# Keep CPU-heavy image decoding/JPEG encoding and Drive media uploads bounded.
-# Each worker owns its own Google Drive client, which avoids sharing a
-# non-thread-safe httplib2 transport between Streamlit session threads.
-PHOTO_UPLOAD_WORKERS = 3
-PHOTO_UPLOAD_TIMEOUT_SECONDS = 120
-
-
-@st.cache_resource(show_spinner=False)
-def date_folder_lock():
-    return threading.Lock()
-
-
 def escape_drive_query(value: str) -> str:
     return value.replace("\\", "\\\\").replace("'", "\\'")
-
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def get_or_create_date_folder(date_sheet: str) -> str:
-    # Extra lock avoids duplicate same-date folders if many students are the
-    # first users to submit at exactly the same moment.
-    with date_folder_lock():
-        parent_folder_id = str(st.secrets["DRIVE_FOLDER_ID"]).strip()
-        escaped_name = escape_drive_query(date_sheet)
-
-        query = (
-            f"name = '{escaped_name}' "
-            f"and '{parent_folder_id}' in parents "
-            "and mimeType = 'application/vnd.google-apps.folder' "
-            "and trashed = false"
-        )
-
-        with drive_service() as service:
-            result = api_call_with_backoff(
-                lambda: service.files().list(
-                    q=query,
-                    spaces="drive",
-                    fields="files(id,name)",
-                    pageSize=10,
-                ).execute()
-            )
-
-            files = result.get("files", [])
-            if files:
-                return files[0]["id"]
-
-            created = api_call_with_backoff(
-                lambda: service.files().create(
-                    body={
-                        "name": date_sheet,
-                        "mimeType": "application/vnd.google-apps.folder",
-                        "parents": [parent_folder_id],
-                    },
-                    fields="id",
-                ).execute()
-            )
-
-        return created["id"]
-
-
-def safe_filename_part(value: str) -> str:
-    value = str(value).strip()
-    value = re.sub(r'[\\/:*?"<>|]+', "_", value)
-    return value or "student"
-
-
-def compress_camera_image_bytes(
-    original: bytes,
-    *,
-    target_bytes: int = 450_000,
-    max_dimension: int = 1280,
-) -> bytes:
-    """Recompress a 720p classroom photo with bounded CPU/RAM usage."""
-    try:
-        with Image.open(io.BytesIO(original)) as img:
-            img = ImageOps.exif_transpose(img)
-
-            if img.mode != "RGB":
-                img = img.convert("RGB")
-
-            if max(img.size) > max_dimension:
-                scale = max_dimension / max(img.size)
-                new_size = (
-                    max(1, int(img.width * scale)),
-                    max(1, int(img.height * scale)),
-                )
-                img = img.resize(new_size, Image.Resampling.LANCZOS)
-
-            # Two passes instead of five: less CPU during a submission burst.
-            for quality in (72, 60):
-                output = io.BytesIO()
-                img.save(
-                    output,
-                    format="JPEG",
-                    quality=quality,
-                    optimize=True,
-                    progressive=True,
-                    subsampling="4:2:0",
-                )
-                compressed = output.getvalue()
-                if len(compressed) <= target_bytes:
-                    return compressed
-
-            return compressed
-
-    except Exception:
-        # 720p input is already reasonably small, so fallback is safe.
-        return original
-
-
-class DrivePhotoUploadPool:
-    """Serialize a large burst into a small, fixed number of Drive workers."""
-
-    def __init__(self, workers: int = PHOTO_UPLOAD_WORKERS):
-        self._queue = queue.Queue(maxsize=200)
-        self._threads = []
-
-        for index in range(workers):
-            thread = threading.Thread(
-                target=self._worker,
-                name=f"drive-photo-uploader-{index + 1}",
-                daemon=True,
-            )
-            thread.start()
-            self._threads.append(thread)
-
-    def submit(self, *, photo_bytes: bytes, folder_id: str, filename: str) -> str:
-        item = {
-            "photo_bytes": photo_bytes,
-            "folder_id": folder_id,
-            "filename": filename,
-            "done": threading.Event(),
-            "result": None,
-            "error": None,
-        }
-
-        try:
-            self._queue.put(item, timeout=5)
-        except queue.Full as exc:
-            raise TimeoutError(
-                "The photo upload queue is full. Please try submitting again."
-            ) from exc
-
-        if not item["done"].wait(timeout=PHOTO_UPLOAD_TIMEOUT_SECONDS):
-            raise TimeoutError(
-                "Photo upload is taking too long. Please try again in a moment."
-            )
-
-        if item["error"] is not None:
-            raise item["error"]
-
-        return str(item["result"])
-
-    def _worker(self):
-        # This service is created and used only inside this worker thread.
-        service = drive_service()
-
-        while True:
-            item = self._queue.get()
-            try:
-                compressed_photo = compress_camera_image_bytes(item["photo_bytes"])
-                media = MediaIoBaseUpload(
-                    io.BytesIO(compressed_photo),
-                    mimetype="image/jpeg",
-                    resumable=False,
-                )
-
-                created = api_call_with_backoff(
-                    lambda: service.files().create(
-                        body={
-                            "name": item["filename"],
-                            "parents": [item["folder_id"]],
-                        },
-                        media_body=media,
-                        fields="id,webViewLink",
-                    ).execute()
-                )
-
-                file_id = created["id"]
-                item["result"] = created.get(
-                    "webViewLink",
-                    f"https://drive.google.com/file/d/{file_id}/view",
-                )
-
-            except Exception as exc:
-                item["error"] = exc
-            finally:
-                item["done"].set()
-                self._queue.task_done()
-
-
-@st.cache_resource(show_spinner=False)
-def drive_photo_upload_pool():
-    return DrivePhotoUploadPool()
-
-
-def upload_attendance_photo(
-    camera_file,
-    student_id: str,
-    student_name: str,
-    submitted_at: datetime,
-) -> str:
-    date_sheet = submitted_at.astimezone(KST).date().isoformat()
-    folder_id = get_or_create_date_folder(date_sheet)
-
-    filename = (
-        f"{safe_filename_part(student_id)}_"
-        f"{safe_filename_part(student_name)}_"
-        f"{submitted_at.astimezone(KST).strftime('%H%M%S')}.jpg"
-    )
-
-    # The camera widget data lives in Streamlit RAM. Copy the small 720p bytes
-    # into the bounded worker queue, then let only three workers decode/upload.
-    return drive_photo_upload_pool().submit(
-        photo_bytes=camera_file.getvalue(),
-        folder_id=folder_id,
-        filename=filename,
-    )
 
 
 def make_date_excel(
@@ -1304,7 +1140,7 @@ def student_page():
           <div class="student-kicker">CLASS ATTENDANCE</div>
           <div class="student-title">Attendance Check</div>
           <p class="student-subtitle">
-            Take a photo of the ongoing lecture and briefly respond to the class question below.<br>
+            Answer the attendance question assigned to you below.<br>
             Attendance is determined automatically based on the actual submission time.
           </p>
         </div>
@@ -1393,7 +1229,7 @@ def student_page():
             start = st.form_submit_button(
                 "Start Attendance Check",
                 type="primary",
-                use_container_width=True,
+                width="stretch",
             )
 
         if start:
@@ -1444,56 +1280,31 @@ def student_page():
     c1.metric("Student", str(student["Name"]))
     c2.metric("Student ID", str(student["Student ID"]))
 
-    if context["schedule"]["session"] == "17:00 Check":
-        response_title = "What do you remember from today's class?"
-        response_instruction = (
-            "Write about something that stood out to you or that you remember "
-            "from the past hour of today's class."
-        )
-        response_placeholder = (
-            "Describe something that stood out to you or that you remember "
-            "from the past hour of today's class."
-        )
-    else:
-        response_title = "What do you expect to learn?"
-        response_instruction = (
-            "Briefly describe what you expect to learn or understand better "
-            "during this class."
-        )
-        response_placeholder = (
-            "Briefly describe what you expect to learn or understand better "
-            "during this class."
-        )
+    session_name = context["schedule"]["session"]
+    attendance_question = attendance_question_for_student(
+        str(student["Student ID"]),
+        context["date_sheet"],
+        session_name,
+    )
+    attendance_question_html = html.escape(attendance_question)
 
     st.markdown(
         f"""
         <div class="instruction-card">
-        <strong>1. Take a class photo</strong><br>
-        Use the camera below to photograph the ongoing lecture. File upload is not available.<br><br>
-        <strong>2. Write a short response</strong><br>
-        {response_instruction}
+        <strong>Your Attendance Question</strong><br><br>
+        {attendance_question_html}<br><br>
+        Please write a response of at least {RESPONSE_MIN_CHARS} characters.
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    session_key = (
-        context["schedule"]["session"]
-        .replace(" ", "_")
-        .replace(":", "")
-    )
-
-    photo = st.camera_input(
-        "Take a photo of the ongoing lecture",
-        resolution="720p",
-        key=f"camera_{student['Student ID']}_{context['date_sheet']}_{session_key}",
-    )
+    session_key = session_name.replace(" ", "_").replace(":", "")
 
     class_response = st.text_area(
-        response_title,
-        placeholder=response_placeholder,
+        "Your Response",
+        placeholder="배정된 질문에 대한 답변을 작성하세요.",
         height=140,
-        max_chars=1000,
         key=f"response_{student['Student ID']}_{context['date_sheet']}_{session_key}",
     )
 
@@ -1504,7 +1315,7 @@ def student_page():
     if st.button(
         "Submit Attendance",
         type="primary",
-        use_container_width=True,
+        width="stretch",
     ):
         submitted_at = now_kst()
         fresh_context = class_context(submitted_at)
@@ -1514,10 +1325,6 @@ def student_page():
                 "The attendance submission window has closed. "
                 "Your submission was not recorded."
             )
-            return
-
-        if photo is None:
-            st.error("Please take a class photo before submitting.")
             return
 
         if len(class_response.strip()) < RESPONSE_MIN_CHARS:
@@ -1541,11 +1348,12 @@ def student_page():
 
         try:
             with st.spinner("Saving your attendance record..."):
-                photo_url = upload_attendance_photo(
-                    photo,
+                # Recompute from the final submission context so the saved
+                # question always matches the student's current date/session.
+                submitted_question = attendance_question_for_student(
                     str(student["Student ID"]),
-                    str(student["Name"]),
-                    submitted_at,
+                    fresh_context["date_sheet"],
+                    fresh_context["schedule"]["session"],
                 )
 
                 append_attendance_record(
@@ -1553,8 +1361,8 @@ def student_page():
                     submitted_at=submitted_at,
                     status=status,
                     session=fresh_context["schedule"]["session"],
+                    question=submitted_question,
                     class_response=class_response,
-                    photo_url=photo_url,
                 )
 
         except Exception as exc:
@@ -1656,7 +1464,7 @@ def reflection_page():
             start = st.form_submit_button(
                 "Start Class Reflection",
                 type="primary",
-                use_container_width=True,
+                width="stretch",
             )
 
         if start:
@@ -1728,7 +1536,7 @@ def reflection_page():
     if st.button(
         "Submit Class Reflection",
         type="primary",
-        use_container_width=True,
+        width="stretch",
     ):
         submitted_at = now_kst()
         fresh_context = reflection_context(submitted_at)
@@ -1823,7 +1631,7 @@ def admin_page():
     st.dataframe(
         roster,
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
     )
 
     st.divider()
@@ -1881,16 +1689,21 @@ def admin_page():
     if attendance_df.empty:
         st.info("No attendance submissions for this date.")
     else:
+        photo_column_config = {}
+        if (
+            "Photo URL" in attendance_df.columns
+            and attendance_df["Photo URL"].astype(str).str.strip().ne("").any()
+        ):
+            photo_column_config["Photo URL"] = st.column_config.LinkColumn(
+                "Photo",
+                display_text="View Photo",
+            )
+
         st.dataframe(
             attendance_df,
             hide_index=True,
-            use_container_width=True,
-            column_config={
-                "Photo URL": st.column_config.LinkColumn(
-                    "Photo",
-                    display_text="View Photo",
-                )
-            },
+            width="stretch",
+            column_config=photo_column_config,
         )
 
     st.markdown("**Not Submitted**")
@@ -1900,7 +1713,7 @@ def admin_page():
         st.dataframe(
             missing,
             hide_index=True,
-            use_container_width=True,
+            width="stretch",
         )
 
     excel_bytes = make_date_excel(
@@ -1913,7 +1726,7 @@ def admin_page():
         data=excel_bytes,
         file_name=f"attendance_{selected_date}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True,
+        width="stretch",
     )
 
     real_dates = list_attendance_sheets()
@@ -1928,7 +1741,7 @@ def admin_page():
             data=all_bytes,
             file_name="attendance_all_dates.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
+            width="stretch",
         )
 
     st.divider()
@@ -1973,7 +1786,7 @@ def admin_page():
     if st.button(
         "Update Reflection Question",
         type="primary",
-        use_container_width=True,
+        width="stretch",
     ):
         if question_upload is None:
             st.error("Please upload a .txt question file first.")
@@ -2006,7 +1819,7 @@ def admin_page():
         st.dataframe(
             reflection_df,
             hide_index=True,
-            use_container_width=True,
+            width="stretch",
         )
 
     if st.button("Reload Latest Data"):

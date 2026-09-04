@@ -1209,8 +1209,8 @@ def student_page():
             st.info(context["message"])
         else:
             st.info(
-                "No class is scheduled today. Attendance submission is available only "
-                "during Tuesday 16:00–18:00 and Thursday 15:00–16:00."
+                "No class is scheduled today. \n "
+                "Attendance submission is available only during Tuesday 16:00–18:00 and Thursday 15:00–16:00."
             )
         return
 

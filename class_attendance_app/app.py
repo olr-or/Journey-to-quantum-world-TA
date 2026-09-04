@@ -288,32 +288,14 @@ DEFAULT_REFLECTION_QUESTION = (
 DATE_SHEET_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 CLASS_SCHEDULE = {
-    1: [
+    4: [
         {
             "session": "16:00 Check",
-            "day_name": "Tuesday",
-            "open": time(16, 0, 0),
-            "present_until": time(16, 10, 0),
-            "late_until": time(16, 20, 0),
-            "close": time(17, 0, 0),
-        },
-        {
-            "session": "17:00 Check",
-            "day_name": "Tuesday",
-            "open": time(17, 0, 0),
-            "present_until": time(17, 5, 0),
-            "late_until": time(17, 20, 0),
-            "close": time(18, 0, 0),
-        },
-    ],
-    3: [
-        {
-            "session": "15:00 Check",
-            "day_name": "Thursday",
-            "open": time(15, 0, 0),
-            "present_until": time(15, 10, 0),
-            "late_until": time(15, 20, 0),
-            "close": time(16, 0, 0),
+            "day_name": "Friday",
+            "open": time(22, 0, 0),
+            "present_until": time(22, 30, 0),
+            "late_until": time(23, 0, 0),
+            "close": time(23, 59, 0),
         },
     ],
 }
@@ -1209,8 +1191,8 @@ def student_page():
             st.info(context["message"])
         else:
             st.info(
-                "No class is scheduled today. Attendance submission is available only "
-                "during Tuesday 16:00–18:00 and Thursday 15:00–16:00."
+                "No class is scheduled today.  \n"
+                "Attendance submission is available only during Tuesday 16:00–18:00 and Thursday 15:00–16:00."
             )
         return
 

@@ -1453,8 +1453,8 @@ def reflection_page():
           <div class="student-kicker">CLASS REFLECTION</div>
           <div class="student-title">Class Reflection</div>
           <p class="student-subtitle">
-            Share a short reflection on today's class.<br>
-            No photo is required for this submission.
+            Please share your thoughts on today’s class or submit answers to any quizzes assigned during class.<br>
+            You are also welcome to share any suggestions or feedback that may help improve the course.
           </p>
         </div>
         """,
@@ -1466,7 +1466,10 @@ def reflection_page():
         <div class="schedule-card">
           🐣 <strong>Reflection submission schedule</strong><br><br>
           <strong>Tuesday:</strong> 16:00–18:20<br>
-          <strong>Thursday:</strong> 15:40–17:00
+          <strong>Thursday:</strong> 15:40–17:00  
+          Reflection submission times may vary depending on the professor's instructions.<br>
+          The Reflection page may also be used for submitting quiz answers when needed.<br>
+          In general, reflections can be submitted from 20 minutes before the end of class until one hour after the class ends.
         </div>
         """,
         unsafe_allow_html=True,

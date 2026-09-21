@@ -1467,6 +1467,7 @@ def reflection_page():
           🐣 <strong>Reflection submission schedule</strong><br><br>
           <strong>Tuesday:</strong> 16:00–18:20<br>
           <strong>Thursday:</strong> 15:40–17:00  
+          
           Reflection submission times may vary depending on the professor's instructions.<br>
           The Reflection page may also be used for submitting quiz answers when needed.<br>
           In general, reflections can be submitted from 20 minutes before the end of class until one hour after the class ends.

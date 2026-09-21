@@ -320,9 +320,9 @@ CLASS_SCHEDULE = {
 REFLECTION_SCHEDULE = {
     1: {
         "day_name": "Tuesday",
-        "session": "17:40 Reflection",
-        "open": time(17, 40, 0),
-        "close": time(19, 0, 0),
+        "session": "16:00 Reflection",
+        "open": time(16, 0, 0),
+        "close": time(18, 20, 0),
     },
     3: {
         "day_name": "Thursday",
@@ -1403,8 +1403,8 @@ def reflection_page():
         """
         <div class="schedule-card">
           🐣 <strong>Reflection submission schedule</strong><br><br>
-          <strong>Tuesday:</strong> 17:40–18:00<br>
-          <strong>Thursday:</strong> 15:40–16:00
+          <strong>Tuesday:</strong> 16:00–18:20<br>
+          <strong>Thursday:</strong> 15:40–17:00
         </div>
         """,
         unsafe_allow_html=True,

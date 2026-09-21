@@ -230,7 +230,9 @@ LEGACY_ATTENDANCE_HEADERS = [
 # assigned question in the new Question column.
 ATTENDANCE_HEADERS = LEGACY_ATTENDANCE_HEADERS + ["Question"]
 
-REFLECTION_SHEET = "reflections"
+LEGACY_REFLECTION_SHEET = "reflections"
+REFLECTION_SHEET_PREFIX = "reflection_"
+REFLECTION_SHEET_RE = re.compile(r"^reflection_(\d{4}-\d{2}-\d{2})$")
 REFLECTION_HEADERS = [
     "Student ID",
     "Name",
@@ -803,10 +805,14 @@ def read_attendance_sheet(date_sheet: str) -> pd.DataFrame:
     return pd.DataFrame(normalized, columns=ATTENDANCE_HEADERS)
 
 
+def reflection_sheet_name(class_date: str) -> str:
+    return f"{REFLECTION_SHEET_PREFIX}{str(class_date).strip()}"
+
+
 @st.cache_resource(show_spinner=False)
-def ensure_reflection_sheet():
+def ensure_reflection_sheet(sheet_name: str):
     ws = get_or_create_worksheet(
-        REFLECTION_SHEET,
+        sheet_name,
         rows=1000,
         cols=len(REFLECTION_HEADERS) + 2,
     )
@@ -821,17 +827,16 @@ def ensure_reflection_sheet():
 
     if first_row[: len(REFLECTION_HEADERS)] != REFLECTION_HEADERS:
         raise RuntimeError(
-            f"The header of the '{REFLECTION_SHEET}' sheet does not match the expected format. "
+            f"The header of the '{sheet_name}' sheet does not match the expected format. "
             f"Please set the first row to {REFLECTION_HEADERS}."
         )
 
     return ws
 
 
-@st.cache_data(ttl=20, show_spinner=False)
-def read_reflections() -> pd.DataFrame:
+def _read_reflection_worksheet(sheet_name: str) -> pd.DataFrame:
     try:
-        ws = api_call_with_backoff(lambda: open_spreadsheet().worksheet(REFLECTION_SHEET))
+        ws = api_call_with_backoff(lambda: open_spreadsheet().worksheet(sheet_name))
     except gspread.WorksheetNotFound:
         return pd.DataFrame(columns=REFLECTION_HEADERS)
 
@@ -841,8 +846,11 @@ def read_reflections() -> pd.DataFrame:
 
     header = values[0]
     if header[: len(REFLECTION_HEADERS)] != REFLECTION_HEADERS:
+        # Do not let a malformed legacy reflections tab block new date-based tabs.
+        if sheet_name == LEGACY_REFLECTION_SHEET:
+            return pd.DataFrame(columns=REFLECTION_HEADERS)
         raise RuntimeError(
-            f"The header of the '{REFLECTION_SHEET}' sheet does not match the expected format. "
+            f"The header of the '{sheet_name}' sheet does not match the expected format. "
             f"Please set the first row to {REFLECTION_HEADERS}."
         )
 
@@ -856,6 +864,45 @@ def read_reflections() -> pd.DataFrame:
     return pd.DataFrame(normalized, columns=REFLECTION_HEADERS)
 
 
+@st.cache_data(ttl=20, show_spinner=False)
+def read_reflections(class_date: str | None = None) -> pd.DataFrame:
+    spreadsheet = open_spreadsheet()
+    sheet_titles = [
+        ws.title for ws in api_call_with_backoff(spreadsheet.worksheets)
+        if REFLECTION_SHEET_RE.match(ws.title)
+    ]
+
+    frames = []
+    if class_date:
+        target_sheet = reflection_sheet_name(class_date)
+        if target_sheet in sheet_titles:
+            frames.append(_read_reflection_worksheet(target_sheet))
+    else:
+        for title in sorted(sheet_titles, reverse=True):
+            frames.append(_read_reflection_worksheet(title))
+
+    # Keep valid historical data from the old single 'reflections' tab readable.
+    legacy = _read_reflection_worksheet(LEGACY_REFLECTION_SHEET)
+    if not legacy.empty:
+        if class_date:
+            legacy = legacy[
+                legacy["Class Date"].astype(str).str.strip() == str(class_date).strip()
+            ].copy()
+        frames.append(legacy)
+
+    frames = [df for df in frames if not df.empty]
+    if not frames:
+        return pd.DataFrame(columns=REFLECTION_HEADERS)
+
+    df = pd.concat(frames, ignore_index=True)
+    df = df.sort_values(
+        by=["Class Date", "Submitted At"],
+        ascending=[False, True],
+        kind="stable",
+    ).reset_index(drop=True)
+    return df
+
+
 def reflection_has_submitted(student_id: str, class_date: str) -> bool:
     key = (str(student_id).strip(), str(class_date).strip())
     state = submission_state()
@@ -864,7 +911,7 @@ def reflection_has_submitted(student_id: str, class_date: str) -> bool:
         if key in state["reflections"]:
             return True
 
-    df = read_reflections()
+    df = read_reflections(class_date)
     if df.empty:
         return False
 
@@ -945,7 +992,11 @@ class SheetWriteBatcher:
                 state = submission_state()
                 bucket = "attendance" if kind == "attendance" else "reflections"
                 try:
-                    ws = ensure_attendance_sheet(sheet_name) if kind == "attendance" else ensure_reflection_sheet()
+                    ws = (
+                        ensure_attendance_sheet(sheet_name)
+                        if kind == "attendance"
+                        else ensure_reflection_sheet(sheet_name)
+                    )
                     rows = [item["row"] for item in items]
                     api_call_with_backoff(
                         lambda ws=ws, rows=rows: ws.append_rows(rows, value_input_option="RAW")
@@ -957,6 +1008,11 @@ class SheetWriteBatcher:
                             item["error"] = exc
                             item["done"].set()
                 else:
+                    if kind == "reflection":
+                        read_reflections.clear()
+                    elif kind == "attendance":
+                        read_attendance_sheet.clear()
+
                     for item in items:
                         item["done"].set()
 
@@ -991,7 +1047,7 @@ def append_reflection(
     state_key = (str(student["Student ID"]).strip(), class_date)
     sheet_write_batcher().submit(
         kind="reflection",
-        sheet_name=REFLECTION_SHEET,
+        sheet_name=reflection_sheet_name(class_date),
         row=row,
         state_key=state_key,
     )
@@ -1214,6 +1270,12 @@ def student_page():
         return
 
     if st.session_state.attendance_student is None:
+        st.warning(
+            "⚠️ 출석 체크는 강의실의 전자출결 기기에서 학생증 태깅으로 처리합니다. "
+            "학생증을 가져오지 않아 태깅할 수 없는 부득이한 경우에만 "
+            "아래 출석 체크 페이지를 이용하세요."
+        )
+
         with st.form("attendance_login"):
             student_id = st.text_input(
                 "Student ID",
@@ -1815,8 +1877,30 @@ def admin_page():
     if reflection_df.empty:
         st.info("No class reflections have been submitted yet.")
     else:
+        reflection_dates = sorted(
+            reflection_df["Class Date"]
+            .astype(str)
+            .str.strip()
+            .loc[lambda x: x != ""]
+            .unique(),
+            reverse=True,
+        )
+
+        selected_reflection_date = st.selectbox(
+            "Reflection Date",
+            reflection_dates,
+            index=0,
+            key="admin_reflection_date",
+        )
+
+        daily_reflections = reflection_df[
+            reflection_df["Class Date"].astype(str).str.strip()
+            == selected_reflection_date
+        ].copy()
+
+        st.caption(f"{len(daily_reflections)} reflection(s) submitted on {selected_reflection_date}.")
         st.dataframe(
-            reflection_df,
+            daily_reflections,
             hide_index=True,
             width="stretch",
         )
@@ -1840,14 +1924,14 @@ if not secret_ready():
 
 page = st.sidebar.radio(
     "Menu",
-    ["Attendance Check", "Class Reflection", "Admin"],
+    ["Class Reflection", "Attendance Check", "Admin"],
 )
 
 try:
-    if page == "Attendance Check":
-        student_page()
-    elif page == "Class Reflection":
+    if page == "Class Reflection":
         reflection_page()
+    elif page == "Attendance Check":
+        student_page()
     else:
         admin_page()
 

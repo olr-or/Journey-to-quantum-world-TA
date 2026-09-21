@@ -1466,7 +1466,7 @@ def reflection_page():
         <div class="schedule-card">
           🐣 <strong>Reflection submission schedule</strong><br><br>
           <strong>Tuesday:</strong> 16:00–18:20<br>
-          <strong>Thursday:</strong> 15:40–17:00  
+          <strong>Thursday:</strong> 15:40–17:00<br><br>
           
           Reflection submission times may vary depending on the professor's instructions.<br>
           The Reflection page may also be used for submitting quiz answers when needed.<br>
